@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { locale, t } from '../lib/i18n';
+  import { formatTime } from '../lib/format';
   import { route } from '../lib/router';
   import {
     bootstrapSession,
+    dashboardRefreshTick,
+    dashboardUpdatedAt,
     loadNotifications,
     maintenanceMode,
     mustChangePassword,
@@ -50,6 +53,7 @@
   $: segments = $route.segments;
   $: section = segments[0] || '';
   $: head = shellHead(section, $locale);
+  $: updatedLabel = formatTime($dashboardUpdatedAt);
 
   function shellHead(key: string, _loc: string): { title: string; subtitle: string; active: string } {
     switch (key) {
@@ -104,11 +108,24 @@
         active={head.active}
         title={head.title}
         subtitle={head.subtitle}
+        icon={section === '' ? 'admin' : ''}
         appName={$adminMeta.appName}
         publicUrl={$adminMeta.publicUrl}
         logoUrl={$adminMeta.logoUrl}
         version={$adminMeta.version}
       >
+        <svelte:fragment slot="actions">
+          {#if section === ''}
+            <span class="hidden items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 sm:flex">
+              <span class="h-2 w-2 rounded-full {$dashboardUpdatedAt ? 'bg-emerald-500' : 'bg-slate-400'}"></span>
+              {t('admin.dashboard.updated')}:
+              <span class="tabular-nums text-slate-900 dark:text-white">{updatedLabel}</span>
+            </span>
+            <button type="button" class="btn-secondary btn-sm" title={t('common.refresh')} on:click={() => dashboardRefreshTick.update((n) => n + 1)}>
+              <Icon name="refresh" size={15} />
+            </button>
+          {/if}
+        </svelte:fragment>
         {#if section === ''}
           <Dashboard />
         {:else if section === 'users'}

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/AeroTex-Software/TEX-Share/internal/util"
@@ -55,6 +56,34 @@ func (a *App) runJobs() {
 	a.notifyStorageUsage()
 	a.backupTick()
 	a.ddnsTick()
+	a.flushTraffic()
+}
+
+// flushTraffic folds the deltas of the monotonic network counters into today's
+// traffic_daily row. The counters are process-local and reset on restart, so a
+// decrease is treated as a restart and the whole current value is attributed to
+// the current day. Failures are non-fatal: the counters keep accumulating and
+// the next tick retries.
+func (a *App) flushTraffic() {
+	tx := atomic.LoadInt64(&a.trafficTx)
+	rx := atomic.LoadInt64(&a.trafficRx)
+	dtx := tx - a.lastTrafficTx
+	drx := rx - a.lastTrafficRx
+	if dtx < 0 {
+		dtx = tx
+	}
+	if drx < 0 {
+		drx = rx
+	}
+	a.lastTrafficTx = tx
+	a.lastTrafficRx = rx
+	if dtx == 0 && drx == 0 {
+		return
+	}
+	day := util.Day(util.Now())
+	_, _ = a.db.Exec(`INSERT INTO traffic_daily(day, tx_bytes, rx_bytes) VALUES(?, ?, ?)
+		ON CONFLICT(day) DO UPDATE SET tx_bytes = tx_bytes + excluded.tx_bytes, rx_bytes = rx_bytes + excluded.rx_bytes`,
+		day, dtx, drx)
 }
 
 // ddnsTick runs the DDNS engine if enabled. It is isolated from the other jobs

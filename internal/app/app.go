@@ -45,6 +45,16 @@ type App struct {
 	trafficTx int64
 	trafficRx int64
 
+	// Last values folded into traffic_daily by the flush job, so the deltas
+	// between runs are attributed to the right day.
+	lastTrafficTx int64
+	lastTrafficRx int64
+
+	// Host CPU utilisation, sampled in the background as per-mille. cpuKnown is
+	// zero on platforms that cannot report CPU load.
+	cpuMilli int64
+	cpuKnown int32
+
 	auditMu       sync.Mutex
 	lastAuditHash string
 
@@ -126,6 +136,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	a.initNetwork()
 	a.refreshTrustedProxies()
 	a.startJobs()
+	a.startMetrics()
 	return a, nil
 }
 

@@ -254,7 +254,7 @@ func (a *App) systemInfo() map[string]any {
 	if fi, err := os.Stat(filepath.Join(a.cfg.DataDir, "db", "texshare.db")); err == nil {
 		dbSize = fi.Size()
 	}
-	return map[string]any{
+	info := map[string]any{
 		"version": a.cfg.Version, "commit": a.cfg.Commit, "go": runtime.Version(),
 		"os": runtime.GOOS, "arch": runtime.GOARCH, "cpus": runtime.NumCPU(),
 		"startedAt": a.startedAt.Unix(), "uptimeSeconds": uptime,
@@ -262,6 +262,16 @@ func (a *App) systemInfo() map[string]any {
 		"dbSizeBytes": dbSize, "errors": atomic.LoadInt64(&a.errorCount),
 		"publicUrl": a.cfg.PublicURL, "adminUrl": a.cfg.AdminURL,
 	}
+	// Host utilisation. Omitted when the platform cannot report it so the UI can
+	// show the gauge as unavailable rather than a fabricated value.
+	if pct, ok := a.cpuPercent(); ok {
+		info["cpuPercent"] = pct
+	}
+	if used, total, ok := memUsage(); ok {
+		info["memUsedBytes"] = used
+		info["memTotalBytes"] = total
+	}
+	return info
 }
 
 // trafficHandler returns the monotonic network byte counters used by the live
@@ -380,9 +390,119 @@ func (a *App) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 			"newUsers24h": newUsers, "newShares24h": newShares,
 		},
 		"usage":      usage,
+		"series":     a.dashboardSeries(),
+		"activities": a.recentActivity(6),
+		"backup":     a.backupSummary(),
 		"system":     a.systemInfo(),
 		"monitoring": map[string]any{"tunnel": tunnelStatus(a), "clamav": clamavStatus(a)},
 	})
+}
+
+// dashboardSeries returns the last seven days (oldest first) of new users, new
+// shares and network traffic, so the dashboard can chart real trends without
+// the client guessing missing days.
+func (a *App) dashboardSeries() []map[string]any {
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -6)
+
+	days := make([]string, 7)
+	index := map[string]int{}
+	for i := 0; i < 7; i++ {
+		day := start.AddDate(0, 0, i).Format("2006-01-02")
+		days[i] = day
+		index[day] = i
+	}
+
+	users := make([]int64, 7)
+	shares := make([]int64, 7)
+	down := make([]int64, 7)
+	up := make([]int64, 7)
+
+	countByDay := func(query string, target []int64) {
+		rows, err := a.db.Query(query, start.Unix())
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var n int64
+			if rows.Scan(&day, &n) == nil {
+				if i, ok := index[day]; ok {
+					target[i] = n
+				}
+			}
+		}
+	}
+	countByDay(`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch'), COUNT(*) FROM users WHERE created_at >= ? GROUP BY 1`, users)
+	countByDay(`SELECT strftime('%Y-%m-%d', created_at, 'unixepoch'), COUNT(*) FROM shares WHERE created_at >= ? GROUP BY 1`, shares)
+
+	if rows, err := a.db.Query(`SELECT day, tx_bytes, rx_bytes FROM traffic_daily WHERE day >= ?`, days[0]); err == nil {
+		for rows.Next() {
+			var day string
+			var tx, rx int64
+			if rows.Scan(&day, &tx, &rx) == nil {
+				if i, ok := index[day]; ok {
+					down[i] = tx
+					up[i] = rx
+				}
+			}
+		}
+		rows.Close()
+	}
+
+	out := make([]map[string]any, 0, 7)
+	for i, day := range days {
+		out = append(out, map[string]any{
+			"day": day, "users": users[i], "shares": shares[i],
+			"downBytes": down[i], "upBytes": up[i],
+		})
+	}
+	return out
+}
+
+// recentActivity lists the newest activity entries across all users.
+func (a *App) recentActivity(limit int) []map[string]any {
+	if limit < 1 || limit > 50 {
+		limit = 6
+	}
+	out := []map[string]any{}
+	rows, err := a.db.Query(`SELECT a.id, COALESCE(u.username,''), COALESCE(a.share_id,''), a.type, a.meta, a.created_at
+		FROM activity a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.id DESC LIMIT ?`, limit)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, createdAt int64
+		var username, shareID, typ, meta string
+		if rows.Scan(&id, &username, &shareID, &typ, &meta, &createdAt) != nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"id": id, "username": username, "shareId": shareID,
+			"type": typ, "meta": json.RawMessage(meta), "createdAt": createdAt,
+		})
+	}
+	return out
+}
+
+// backupSummary returns the most recent backup and the total count.
+func (a *App) backupSummary() map[string]any {
+	out := map[string]any{"count": 0, "latest": nil}
+	var count int64
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM backups`).Scan(&count)
+	out["count"] = count
+	var rec backupRecord
+	var enc int
+	err := a.db.QueryRow(`SELECT id, filename, size_bytes, kind, encrypted, created_at, status, COALESCE(error,'')
+		FROM backups ORDER BY created_at DESC LIMIT 1`).
+		Scan(&rec.ID, &rec.Filename, &rec.SizeBytes, &rec.Kind, &enc, &rec.CreatedAt, &rec.Status, &rec.Error)
+	if err == nil {
+		rec.Encrypted = enc == 1
+		out["latest"] = rec
+	}
+	return out
 }
 
 func tunnelStatus(a *App) any {

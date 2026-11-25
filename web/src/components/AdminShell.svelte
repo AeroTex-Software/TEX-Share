@@ -10,6 +10,7 @@
   export let active = '';
   export let title = '';
   export let subtitle = '';
+  export let icon = '';
   export let appName = 'TEX Share';
   export let publicUrl = '';
   export let logoUrl = '';
@@ -159,14 +160,41 @@
   {/if}
 
   <div class="flex min-w-0 flex-1 flex-col">
-    <header class="sticky top-0 z-30 hidden h-16 items-center justify-end gap-2 border-b border-slate-200 bg-white/85 px-6 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85 lg:flex">
+    <header class="sticky top-0 z-30 hidden h-16 items-center justify-end gap-3 border-b border-slate-200 bg-white/85 px-6 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85 lg:flex">
+      <span class="hidden items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300 xl:flex">
+        <span class="h-2 w-2 rounded-full bg-emerald-500"></span>{t('admin.dashboard.systemOk')}
+      </span>
+      <button
+        type="button"
+        class="relative rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+        aria-label={t('notifications.title')}
+        on:click={() => navigate('/profile')}
+      >
+        <Icon name="bell" size={19} />
+        {#if $unreadNotifications > 0}
+          <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white">{$unreadNotifications > 9 ? '9+' : $unreadNotifications}</span>
+        {/if}
+      </button>
       <LocaleTheme compact />
+      <Avatar user={$user} size={32} />
     </header>
     <main class="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
       {#if title}
-        <div class="mb-6">
-          <h1 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">{title}</h1>
-          {#if subtitle}<p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>{/if}
+        <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div class="flex items-center gap-3.5">
+            {#if icon}
+              <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lg shadow-brand-600/25">
+                <Icon name={icon} size={24} />
+              </span>
+            {/if}
+            <div>
+              <h1 class="text-2xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-3xl">{title}</h1>
+              {#if subtitle}<p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>{/if}
+            </div>
+          </div>
+          <div class="ml-auto flex items-center gap-2">
+            <slot name="actions" />
+          </div>
         </div>
       {/if}
       <slot />

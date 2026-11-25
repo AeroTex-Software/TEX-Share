@@ -293,6 +293,17 @@ export function resolveConfirm(value: boolean): void {
 export const notifications = writable<Notification[]>([]);
 export const unreadNotifications = writable(0);
 
+/* ------------------------------------------------------------------------- */
+/* Dashboard header bridge                                                    */
+/* ------------------------------------------------------------------------- */
+
+// The admin shell header renders the "Aktualisiert" pill and refresh button,
+// but the dashboard view owns the data. These two stores bridge the two:
+// the view publishes its last load time, and the header bumps the tick to ask
+// for a reload.
+export const dashboardUpdatedAt = writable(0);
+export const dashboardRefreshTick = writable(0);
+
 export async function refreshNotifications(): Promise<void> {
   try {
     const res = await api<{ notifications: Notification[]; unread: number }>('/notifications?limit=40');

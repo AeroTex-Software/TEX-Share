@@ -27,6 +27,11 @@ export function formatDateTime(unix?: number | null): string {
   return new Intl.DateTimeFormat(docLang(), { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unix * 1000));
 }
 
+export function formatTime(unix?: number | null): string {
+  if (!unix) return '—';
+  return new Intl.DateTimeFormat(docLang(), { timeStyle: 'short' }).format(new Date(unix * 1000));
+}
+
 export function timeAgo(unix?: number | null): string {
   if (!unix) return '—';
   const diff = Math.round(unix - Date.now() / 1000);

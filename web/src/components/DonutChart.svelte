@@ -6,10 +6,13 @@
   export let thickness = 18;
   export let centerValue = '';
   export let centerLabel = '';
+  // When set, segment values are a share of this fixed maximum (gauge mode)
+  // instead of the sum of all segments (pie mode).
+  export let max = 0;
 
   $: radius = Math.max(1, (size - thickness) / 2);
   $: circumference = 2 * Math.PI * radius;
-  $: total = segments.reduce((sum, s) => sum + Math.max(0, s.value), 0);
+  $: total = max > 0 ? max : segments.reduce((sum, s) => sum + Math.max(0, s.value), 0);
   $: arcs = (() => {
     if (total <= 0) return [] as { dash: string; offset: number; color: string; label: string }[];
     let acc = 0;
