@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { api, copyText, errorText, mediaURL } from '../../lib/api';
+  import { APIError, api, copyText, errorText, mediaURL } from '../../lib/api';
   import { t } from '../../lib/i18n';
   import { confirmDialog, toast } from '../../lib/stores';
   import type { SystemInfo } from '../../lib/types';
@@ -386,7 +386,7 @@
       await api('/cloudflare/login', { method: 'POST', body: {} });
       await loadCloudflare();
     } catch (err) {
-      toast(errorText(err), 'error');
+      toast(cfError(err), 'error');
     } finally {
       cfBusy = '';
     }
@@ -398,7 +398,7 @@
       await api('/cloudflare/cancel', { method: 'POST', body: {} });
       await loadCloudflare();
     } catch (err) {
-      toast(errorText(err), 'error');
+      toast(cfError(err), 'error');
     } finally {
       cfBusy = '';
     }
@@ -416,7 +416,7 @@
       toast(t('admin.common.success'), 'success');
       await loadCloudflare();
     } catch (err) {
-      toast(errorText(err), 'error');
+      toast(cfError(err), 'error');
     } finally {
       cfBusy = '';
     }
@@ -429,7 +429,7 @@
       toast(t('admin.common.success'), 'success');
       await loadCloudflare();
     } catch (err) {
-      toast(errorText(err), 'error');
+      toast(cfError(err), 'error');
     } finally {
       cfBusy = '';
     }
@@ -449,7 +449,7 @@
       toast(t('admin.common.success'), 'success');
       await loadCloudflare();
     } catch (err) {
-      toast(errorText(err), 'error');
+      toast(cfError(err), 'error');
     } finally {
       cfBusy = '';
     }
@@ -486,6 +486,15 @@
   function cfCopyLogin(): void {
     const url = cf?.cloudflare.loginUrl || '';
     if (url) copyText(url).then(() => toast(t('common.copied'), 'success'));
+  }
+
+  // Cloudflare/DNS errors carry the underlying cloudflared message in `details`;
+  // prefer it over the generic translated text so problems are diagnosable.
+  function cfError(err: unknown): string {
+    if (err instanceof APIError && err.details && (err.code === 'cloudflare_error' || err.code === 'dns_error')) {
+      return err.details;
+    }
+    return errorText(err);
   }
 </script>
 

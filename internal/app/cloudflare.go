@@ -142,6 +142,9 @@ func (m *cloudflareManager) run(ctx context.Context, args ...string) (string, er
 		if msg == "" {
 			msg = err.Error()
 		}
+		if m.app.log != nil {
+			m.app.log.Warn("cloudflared command failed", "args", strings.Join(args, " "), "error", msg)
+		}
 		return text, errors.New(msg)
 	}
 	return text, nil
@@ -306,6 +309,15 @@ var cfTunnelIDRe = regexp.MustCompile(`with id ([0-9a-fA-F-]{36})`)
 
 // findCredentials locates a tunnel credentials file, optionally matching name.
 func (m *cloudflareManager) findCredentials(name string) (cfCredentials, string, bool) {
+	return m.scanCredentials(func(c cfCredentials) bool { return name == "" || c.TunnelName == name })
+}
+
+// findCredentialsByID locates the credentials file for a specific tunnel ID.
+func (m *cloudflareManager) findCredentialsByID(id string) (cfCredentials, string, bool) {
+	return m.scanCredentials(func(c cfCredentials) bool { return strings.EqualFold(c.TunnelID, id) })
+}
+
+func (m *cloudflareManager) scanCredentials(match func(cfCredentials) bool) (cfCredentials, string, bool) {
 	entries, err := os.ReadDir(m.cfDir())
 	if err != nil {
 		return cfCredentials{}, "", false
@@ -323,11 +335,50 @@ func (m *cloudflareManager) findCredentials(name string) (cfCredentials, string,
 		if json.Unmarshal(raw, &c) != nil || c.TunnelID == "" {
 			continue
 		}
-		if name == "" || c.TunnelName == name {
+		if match(c) {
 			return c, path, true
 		}
 	}
 	return cfCredentials{}, "", false
+}
+
+// cfRemoteTunnel is one entry of `cloudflared tunnel list --output json`.
+type cfRemoteTunnel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// findRemoteTunnel looks up a tunnel by name in the Cloudflare account.
+func (m *cloudflareManager) findRemoteTunnel(ctx context.Context, name string) (cfRemoteTunnel, bool) {
+	out, err := m.run(ctx, "tunnel", "list", "--output", "json")
+	if err != nil {
+		return cfRemoteTunnel{}, false
+	}
+	start := jsonArrayStart(out)
+	if start < 0 {
+		return cfRemoteTunnel{}, false
+	}
+	var list []cfRemoteTunnel
+	if json.Unmarshal([]byte(out[start:]), &list) != nil {
+		return cfRemoteTunnel{}, false
+	}
+	for _, t := range list {
+		if strings.EqualFold(t.Name, name) {
+			return t, true
+		}
+	}
+	return cfRemoteTunnel{}, false
+}
+
+// jsonArrayStart returns the index of the first JSON array opening bracket that
+// begins a line, skipping any log lines cloudflared may have written first.
+func jsonArrayStart(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '[' && (i == 0 || s[i-1] == '\n') {
+			return i
+		}
+	}
+	return -1
 }
 
 // EnsureTunnel reuses an existing tunnel/credentials file or creates a new
@@ -337,37 +388,70 @@ func (m *cloudflareManager) EnsureTunnel(ctx context.Context) (cfCredentials, er
 		return cfCredentials{}, errors.New("nicht mit Cloudflare verbunden")
 	}
 	name := m.tunnelName()
+
+	// 1. Reuse credentials we already hold locally.
 	if c, _, ok := m.findCredentials(name); ok {
-		_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
-		return c, nil
+		return m.adopt(c), nil
 	}
+
+	// 2. Create a fresh locally-managed tunnel.
 	out, err := m.run(ctx, "tunnel", "create", name)
-	if err != nil {
-		// A tunnel with this name may already exist remotely.
-		if c, _, ok := m.findCredentials(name); ok {
-			_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
-			return c, nil
+	if err == nil {
+		return m.adoptCreated(out)
+	}
+
+	// 3. The name may already be taken by a tunnel created outside this data
+	//    directory, for example by an earlier token-based setup.
+	existing, ok := m.findRemoteTunnel(ctx, name)
+	if !ok {
+		if strings.Contains(strings.ToLower(out), "already exists") {
+			return cfCredentials{}, fmt.Errorf("ein Tunnel namens %q existiert bereits in diesem Cloudflare-Konto; bitte einen anderen Tunnelnamen wählen", name)
 		}
 		return cfCredentials{}, err
 	}
-	c, _, ok := m.findCredentials(name)
+	if c, _, ok := m.findCredentialsByID(existing.ID); ok {
+		return m.adopt(c), nil
+	}
+	if id := m.tunnelID(); id != "" && strings.EqualFold(id, existing.ID) {
+		// It is the tunnel this installation created before. Replace it with a
+		// locally-managed tunnel so we can hold its credentials file.
+		if _, derr := m.run(ctx, "tunnel", "delete", "-f", existing.ID); derr != nil {
+			return cfCredentials{}, fmt.Errorf("bestehender Tunnel %q konnte nicht ersetzt werden: %w", name, derr)
+		}
+		out, err = m.run(ctx, "tunnel", "create", name)
+		if err != nil {
+			return cfCredentials{}, err
+		}
+		return m.adoptCreated(out)
+	}
+	return cfCredentials{}, fmt.Errorf("ein Tunnel namens %q existiert bereits in diesem Cloudflare-Konto; bitte einen anderen Tunnelnamen wählen", name)
+}
+
+func (m *cloudflareManager) adopt(c cfCredentials) cfCredentials {
+	_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
+	return c
+}
+
+func (m *cloudflareManager) adoptCreated(out string) (cfCredentials, error) {
+	c, _, ok := m.findCredentials(m.tunnelName())
 	if !ok {
 		if mm := cfTunnelIDRe.FindStringSubmatch(out); len(mm) == 2 {
 			return cfCredentials{}, fmt.Errorf("Tunnel %s erstellt, aber Zugangsdatei fehlt", mm[1])
 		}
 		return cfCredentials{}, fmt.Errorf("Zugangsdatei nicht gefunden: %s", strings.TrimSpace(out))
 	}
-	_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
-	return c, nil
+	return m.adopt(c), nil
 }
 
 // RouteDNS creates the proxied CNAME that points a hostname at the tunnel.
+// --overwrite-dns repoints an existing record at the (possibly recreated)
+// tunnel instead of failing.
 func (m *cloudflareManager) RouteDNS(ctx context.Context, name, hostname string) error {
 	hostname = strings.ToLower(strings.TrimSpace(hostname))
 	if hostname == "" {
 		return nil
 	}
-	out, err := m.run(ctx, "tunnel", "route", "dns", name, hostname)
+	out, err := m.run(ctx, "tunnel", "route", "dns", "--overwrite-dns", name, hostname)
 	if err != nil {
 		low := strings.ToLower(out)
 		if strings.Contains(low, "already exists") {
