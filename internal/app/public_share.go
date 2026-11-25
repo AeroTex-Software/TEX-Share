@@ -163,7 +163,7 @@ func (a *App) unlockShareHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.publicSharePayload(s, true))
 		return
 	}
-	ip := util.ClientIP(r, a.cfg.TrustProxy)
+	ip := a.clientIP(r)
 	if !a.loginLimiter.Allow("unlock:"+ip+":"+s.ID, 8, 8) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "")
 		return
@@ -201,7 +201,7 @@ func (a *App) viewShareHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusGone, "share_unavailable", "")
 		return
 	}
-	ip := util.ClientIP(r, a.cfg.TrustProxy)
+	ip := a.clientIP(r)
 	if !a.apiLimiter.Allow("view:"+ip+":"+s.ID, 2, 2) {
 		w.WriteHeader(http.StatusNoContent)
 		return

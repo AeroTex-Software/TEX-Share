@@ -181,6 +181,21 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("POST /api/admin/cloudflare/disable", a.requireUser("admin", a.cloudflareDisableHandler))
 	mux.HandleFunc("POST /api/admin/cloudflare/disconnect", a.requireUser("admin", a.cloudflareDisconnectHandler))
 
+	// Flexible domain / DNS / network management. None of these require
+	// Cloudflare or any specific reverse proxy.
+	mux.HandleFunc("GET /api/admin/network/status", a.requireUser("admin", a.networkStatusHandler))
+	mux.HandleFunc("PATCH /api/admin/network", a.requireUser("admin", a.networkPatchHandler))
+	mux.HandleFunc("GET /api/admin/network/guide", a.requireUser("admin", a.networkGuideHandler))
+	mux.HandleFunc("GET /api/admin/network/dns/instructions", a.requireUser("admin", a.networkDNSInstructionsHandler))
+	mux.HandleFunc("POST /api/admin/network/detect-ip", a.requireUser("admin", a.networkDetectIPHandler))
+	mux.HandleFunc("POST /api/admin/network/cloudflare/token", a.requireUser("admin", a.cloudflareTokenHandler))
+	mux.HandleFunc("GET /api/admin/network/cloudflare/zones", a.requireUser("admin", a.cloudflareZonesHandler))
+	mux.HandleFunc("POST /api/admin/network/dns/apply", a.requireUser("admin", a.dnsApplyHandler))
+	mux.HandleFunc("POST /api/admin/network/dns/delete", a.requireUser("admin", a.dnsDeleteHandler))
+	mux.HandleFunc("POST /api/admin/network/ddns/run", a.requireUser("admin", a.networkDDNSRunHandler))
+	mux.HandleFunc("GET /api/admin/network/ddns/log", a.requireUser("admin", a.networkDDNSLogHandler))
+	mux.HandleFunc("POST /api/admin/network/verify/{id}", a.requireUser("admin", a.networkVerifyHandler))
+
 	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "")
 	}))

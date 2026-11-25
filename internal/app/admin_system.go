@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,6 +73,25 @@ var editableSettings = map[string]settingKind{
 	"force_https_links":             {kind: "bool"},
 	"public_base_url":               {kind: "string", maxLen: 255},
 	"default_share_retention_days":  {kind: "int", min: 0, max: 3650},
+
+	// Flexible DNS / network / reverse-proxy management.
+	"network_dns_provider":   {kind: "enum", enum: []string{"manual", "cloudflare", "none"}},
+	"network_connection":     {kind: "enum", enum: []string{"direct", "proxy", "tunnel", "static", "ddns"}},
+	"network_proxy_kind":     {kind: "enum", enum: []string{"none", "nginx", "caddy", "traefik", "npm", "haproxy", "other"}},
+	"network_proxy_hostname": {kind: "string", maxLen: 253},
+	"network_proxy_upstream": {kind: "string", maxLen: 253},
+	"network_admin_exposed":  {kind: "bool"},
+	"trusted_proxies":        {kind: "cidrlist"},
+	"cf_account_id":          {kind: "string", maxLen: 64},
+	"cf_zone_id":             {kind: "string", maxLen: 64},
+	"cf_zone_name":           {kind: "string", maxLen: 253},
+	"ddns_enabled":           {kind: "bool"},
+	"ddns_provider":          {kind: "enum", enum: []string{"cloudflare", "manual"}},
+	"ddns_interval_minutes":  {kind: "int", min: 1, max: 1440},
+	"ddns_ipv4":              {kind: "bool"},
+	"ddns_ipv6":              {kind: "bool"},
+	"public_ipv4":            {kind: "ip"},
+	"public_ipv6":            {kind: "ip"},
 }
 
 func (a *App) validateSetting(key, value string) (string, error) {
@@ -117,6 +137,15 @@ func (a *App) validateSetting(key, value string) (string, error) {
 		if key == "cf_hostname" && value != "" && !util.ValidHostname(value) {
 			return "", fmt.Errorf("%s must be a hostname", key)
 		}
+		if key == "network_proxy_hostname" && value != "" && !util.ValidHostname(value) {
+			return "", fmt.Errorf("%s must be a hostname", key)
+		}
+		if key == "cf_zone_name" && value != "" && !util.ValidHostname(value) {
+			return "", fmt.Errorf("%s must be a hostname", key)
+		}
+		if key == "network_proxy_upstream" && value != "" && net.ParseIP(value) == nil && !util.ValidHostname(value) {
+			return "", fmt.Errorf("%s must be an IP or hostname", key)
+		}
 	case "stringlist":
 		var list []string
 		if err := json.Unmarshal([]byte(value), &list); err != nil {
@@ -129,6 +158,33 @@ func (a *App) validateSetting(key, value string) (string, error) {
 			if len(item) > 128 {
 				return "", fmt.Errorf("%s contains an overly long entry", key)
 			}
+		}
+	case "cidrlist":
+		// Comma separated IPs / CIDRs of trusted proxies. Invalid entries are
+		// rejected instead of silently ignored so a typo cannot weaken header
+		// handling.
+		for _, raw := range strings.Split(value, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			if len(raw) > 64 {
+				return "", fmt.Errorf("%s contains an overly long entry", key)
+			}
+			if strings.Contains(raw, "/") {
+				if _, _, err := net.ParseCIDR(raw); err != nil {
+					return "", fmt.Errorf("%s contains an invalid CIDR %q", key, raw)
+				}
+				continue
+			}
+			if net.ParseIP(raw) == nil {
+				return "", fmt.Errorf("%s contains an invalid address %q", key, raw)
+			}
+		}
+	case "ip":
+		// Empty is allowed (clears the value); otherwise it must parse.
+		if value != "" && net.ParseIP(value) == nil {
+			return "", fmt.Errorf("%s must be an IP address", key)
 		}
 	}
 	return value, nil
@@ -172,6 +228,7 @@ func (a *App) adminPatchSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
+	a.refreshTrustedProxies()
 	a.refreshHostCache()
 	a.auditRequest(r, "settings.update", "settings", "", "success", map[string]any{"keys": sortedKeys(clean)})
 	if _, ok := clean["backup_retention_count"]; ok {
@@ -250,6 +307,15 @@ func (a *App) monitoringHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.cloudflare != nil {
 		stats["cloudflare"] = a.cloudflare.Status()
+	}
+	if a.network != nil && a.network.ddns != nil {
+		stats["ddns"] = a.network.ddns.Status()
+	}
+	stats["network"] = map[string]any{
+		"dnsProvider":    a.globalDNSProvider(),
+		"connection":     a.globalNetworkMode(),
+		"proxyKind":      a.globalProxyKind(),
+		"trustedProxies": a.trusted().Strings(),
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"monitoring": stats, "system": a.systemInfo()})
 }

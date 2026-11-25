@@ -10,6 +10,7 @@ import (
 
 	"github.com/AeroTex-Software/TEX-Share/internal/config"
 	"github.com/AeroTex-Software/TEX-Share/internal/db"
+	"github.com/AeroTex-Software/TEX-Share/internal/network/proxy"
 	"github.com/AeroTex-Software/TEX-Share/internal/secrets"
 	"github.com/AeroTex-Software/TEX-Share/internal/settings"
 	"github.com/AeroTex-Software/TEX-Share/internal/storage"
@@ -55,6 +56,11 @@ type App struct {
 	clamav     *clamAV
 	cloudflare *cloudflareManager
 	tunnel     *cloudflaredTunnel
+	network    *networkManager
+
+	// trustedProxies is rebuilt whenever settings change.
+	trustMu        sync.RWMutex
+	trustedProxies *proxy.Trusted
 
 	// domain cache for Host validation
 	hostMu      sync.RWMutex
@@ -111,6 +117,8 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 	if err := a.initCloudflare(); err != nil {
 		logger.Warn("cloudflare init failed", "error", err)
 	}
+	a.initNetwork()
+	a.refreshTrustedProxies()
 	a.startJobs()
 	return a, nil
 }

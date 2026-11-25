@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -53,6 +54,23 @@ func (a *App) runJobs() {
 	a.notifyExpiringShares()
 	a.notifyStorageUsage()
 	a.backupTick()
+	a.ddnsTick()
+}
+
+// ddnsTick runs the DDNS engine if enabled. It is isolated from the other jobs
+// so a network problem can never abort cleanup or notifications.
+func (a *App) ddnsTick() {
+	if a.network == nil || a.network.ddns == nil {
+		return
+	}
+	defer func() {
+		if v := recover(); v != nil {
+			a.log.Error("ddns job panic", "panic", fmt.Sprint(v))
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	a.network.ddns.Tick(ctx, a.applyDDNS, a.ddnsConfig())
 }
 
 func (a *App) expireShares() {

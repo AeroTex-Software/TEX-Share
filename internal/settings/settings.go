@@ -46,6 +46,32 @@ var Defaults = map[string]string{
 	"cf_tunnel_id":                 "",
 	"cf_tunnel_name":               "tex-share",
 	"cf_hostname":                  "",
+	// --- Flexible DNS / network / reverse-proxy management -------------------
+	// These are intentionally independent of each other and of Cloudflare.
+	"network_dns_provider":  "manual",   // cloudflare | manual | none
+	"network_connection":    "direct",   // direct | proxy | tunnel | static | ddns
+	"network_proxy_kind":    "none",     // none | nginx | caddy | traefik | npm | haproxy | other
+	"network_proxy_hostname": "",        // public hostname served by the external proxy
+	"network_proxy_upstream": "127.0.0.1", // proxy -> texshare host
+	"network_admin_exposed": "0",        // admin UI reachable through a proxy?
+	"trusted_proxies":       "",         // comma separated CIDRs / IPs
+	"cf_api_token_enc":      "",         // encrypted Cloudflare DNS API token
+	"cf_account_id":         "",
+	"cf_zone_id":            "",
+	"cf_zone_name":          "",
+	"ddns_enabled":          "0",
+	"ddns_provider":         "cloudflare", // cloudflare | manual
+	"ddns_interval_minutes": "5",
+	"ddns_ipv4":             "1",
+	"ddns_ipv6":             "0",
+	"ddns_last_check":       "0",
+	"ddns_last_update":      "0",
+	"ddns_last_ipv4":        "",
+	"ddns_last_ipv6":        "",
+	"ddns_last_error":       "",
+	"ddns_retries":          "0",
+	"public_ipv4":           "",
+	"public_ipv6":           "",
 	"backup_schedule":              "off",
 	"backup_hour":                  "3",
 	"backup_retention_count":       "14",

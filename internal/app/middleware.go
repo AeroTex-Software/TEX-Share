@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/AeroTex-Software/TEX-Share/internal/util"
 )
 
 type statusRecorder struct {
@@ -128,7 +126,7 @@ func (a *App) apiRateLimit(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ip := util.ClientIP(r, a.cfg.TrustProxy)
+		ip := a.clientIP(r)
 		rate := float64(a.settings.Int("api_rate_per_minute"))
 		if rate <= 0 {
 			rate = 300

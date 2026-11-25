@@ -64,6 +64,19 @@ type Domain struct {
 	CreatedAt         int64  `json:"createdAt"`
 	UserCount         int64  `json:"userCount,omitempty"`
 	ShareCount        int64  `json:"shareCount,omitempty"`
+
+	// Flexible DNS / network binding. Empty values inherit the global setting.
+	DNSProvider   string `json:"dnsProvider"`
+	DNSRecordType string `json:"dnsRecordType"`
+	DNSTarget     string `json:"dnsTarget"`
+	DNSZoneID     string `json:"dnsZoneId"`
+	DNSRecordID   string `json:"dnsRecordId"`
+	DNSStatus     string `json:"dnsStatus"`
+	DNSCheckedAt  int64  `json:"dnsCheckedAt"`
+	DNSOK         *bool  `json:"dnsOk,omitempty"`
+	DNSError      string `json:"dnsError,omitempty"`
+	NetworkMode   string `json:"networkMode"`
+	ProxyKind     string `json:"proxyKind"`
 }
 
 // Share is the central share record.

@@ -88,15 +88,25 @@ var errNotFound = errors.New("not found")
 func (a *App) domainByID(id int64) (*Domain, error) {
 	var d Domain
 	var lastOK interface{}
+	var dnsOK interface{}
 	err := a.db.QueryRow(`SELECT id, hostname, enabled, verified, verification_token, is_default, tls_status,
-		COALESCE(last_checked_at,0), last_check_ok, COALESCE(last_check_error,''), created_at FROM domains WHERE id = ?`, id).
-		Scan(&d.ID, &d.Hostname, &d.Enabled, &d.Verified, &d.VerificationToken, &d.IsDefault, &d.TLSStatus, &d.LastCheckedAt, &lastOK, &d.LastCheckError, &d.CreatedAt)
+		COALESCE(last_checked_at,0), last_check_ok, COALESCE(last_check_error,''), created_at,
+		dns_provider, dns_record_type, dns_target, dns_zone_id, dns_record_id, dns_status,
+		COALESCE(dns_checked_at,0), dns_ok, COALESCE(dns_error,''), network_mode, proxy_kind
+		FROM domains WHERE id = ?`, id).
+		Scan(&d.ID, &d.Hostname, &d.Enabled, &d.Verified, &d.VerificationToken, &d.IsDefault, &d.TLSStatus, &d.LastCheckedAt, &lastOK, &d.LastCheckError, &d.CreatedAt,
+			&d.DNSProvider, &d.DNSRecordType, &d.DNSTarget, &d.DNSZoneID, &d.DNSRecordID, &d.DNSStatus,
+			&d.DNSCheckedAt, &dnsOK, &d.DNSError, &d.NetworkMode, &d.ProxyKind)
 	if err != nil {
 		return nil, err
 	}
 	if b, ok := lastOK.(int64); ok {
 		v := b == 1
 		d.LastCheckOK = &v
+	}
+	if b, ok := dnsOK.(int64); ok {
+		v := b == 1
+		d.DNSOK = &v
 	}
 	return &d, nil
 }

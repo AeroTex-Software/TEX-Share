@@ -179,7 +179,8 @@ else is configured in the admin UI and stored in the database.
 | `TEXSHARE_ADMIN_URL` | – | Canonical admin URL |
 | `TEXSHARE_ALLOWED_HOSTS` | – | Extra accepted public hostnames (comma separated) |
 | `TEXSHARE_ADMIN_ALLOWED_HOSTS` | – | Extra accepted admin hostnames |
-| `TEXSHARE_TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `CF-Connecting-IP` |
+| `TEXSHARE_TRUSTED_PROXIES` | – | Proxy IPs/CIDRs whose forwarded headers are trusted |
+| `TEXSHARE_TRUST_PROXY` | `false` | Legacy: trust forwarded headers from loopback only |
 | `TEXSHARE_FORCE_SECURE_COOKIES` | `false` | Always mark cookies `Secure` |
 | `TEXSHARE_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `TEXSHARE_ACCESS_LOG` | `true` | Emit access logs |
@@ -230,14 +231,22 @@ When running behind a proxy:
 
 - Set `TEXSHARE_PUBLIC_URL` (and `TEXSHARE_ADMIN_URL` if you expose the admin UI
   the same way) to the public URLs.
-- Set `TEXSHARE_TRUST_PROXY=true` **only** if the proxy is trusted. Otherwise
-  clients can spoof their address and bypass rate limiting.
+- List the proxy addresses/CIDRs in `TEXSHARE_TRUSTED_PROXIES` (or the
+  **Trusted proxies** field under **Settings → Domains & Netzwerk**). Only those
+  peers may set `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` and
+  `Forwarded`; headers from anyone else are ignored. The legacy
+  `TEXSHARE_TRUST_PROXY=true` trusts forwarded headers from loopback only.
 - Set `TEXSHARE_FORCE_SECURE_COOKIES=true` so cookies are always `Secure`.
 - Forward the `Host` header unchanged and register every public hostname either
   in **Admin → Domains** or via `TEXSHARE_ALLOWED_HOSTS`.
 
 Expose the admin listener on a **separate** hostname that is additionally
 protected (VPN, mTLS, IP allowlist, or an authenticating proxy).
+
+The admin wizard **Settings → Domains & Netzwerk** generates ready-to-use
+configurations for Nginx, Caddy, Traefik, Nginx Proxy Manager and HAProxy, and
+covers manual DNS, DynDNS, home servers and CGNAT/DS-Lite. The complete guide is
+in [`NETWORK.md`](NETWORK.md).
 
 ---
 

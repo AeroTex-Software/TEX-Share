@@ -30,7 +30,8 @@
       items: [
         { key: 'users', href: '/users', icon: 'users', label: 'admin.nav.users' },
         { key: 'shares', href: '/shares', icon: 'shares', label: 'admin.nav.shares' },
-        { key: 'domains', href: '/domains', icon: 'globe', label: 'admin.nav.domains' }
+        { key: 'domains', href: '/domains', icon: 'globe', label: 'admin.nav.domains' },
+        { key: 'network', href: '/network', icon: 'network', label: 'admin.nav.network' }
       ]
     },
     {

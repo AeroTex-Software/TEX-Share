@@ -31,6 +31,7 @@ encryption** where the server never sees your keys or your data.
 - [Antivirus](#antivirus)
 - [Cloudflare Tunnel](#cloudflare-tunnel)
 - [Reverse proxy and TLS](#reverse-proxy-and-tls)
+- [Domains and network management](#domains-and-network-management)
 - [Security](#security)
 - [Development](#development)
 - [Documentation](#documentation)
@@ -185,7 +186,8 @@ Frequently used variables:
 | `TEXSHARE_PUBLIC_URL` | – | Canonical public URL (CSRF/link generation) |
 | `TEXSHARE_ADMIN_URL` | – | Canonical admin URL |
 | `TEXSHARE_ALLOWED_HOSTS` | – | Extra accepted public hostnames |
-| `TEXSHARE_TRUST_PROXY` | `false` | Trust forwarded client-IP headers |
+| `TEXSHARE_TRUSTED_PROXIES` | – | Proxy IPs/CIDRs whose forwarded headers are trusted |
+| `TEXSHARE_TRUST_PROXY` | `false` | Legacy: trust forwarded headers from loopback only |
 | `TEXSHARE_FORCE_SECURE_COOKIES` | `false` | Force `Secure` cookies behind TLS |
 | `TEXSHARE_CLAMAV_ENABLED` | `false` | Turn antivirus on |
 | `TEXSHARE_CLOUDFLARE_ENABLED` | `false` | Enable tunnel integration |
@@ -282,15 +284,50 @@ integration is entirely optional.
 
 ## Reverse proxy and TLS
 
-TEX Share speaks plain HTTP and expects TLS to be terminated upstream. When
-running behind a proxy:
+TEX Share speaks plain HTTP and expects TLS to be terminated upstream. You are
+free to choose the DNS host and the reverse proxy: Cloudflare is a convenience,
+never a requirement. The admin wizard **Settings → Domains & Netzwerk** guides
+you through the three independent decisions (DNS binding, network path, reverse
+proxy) and prints a ready-to-use configuration for Nginx, Caddy, Traefik, Nginx
+Proxy Manager or HAProxy.
+
+When running behind a proxy:
 
 - Set `TEXSHARE_PUBLIC_URL` and `TEXSHARE_ADMIN_URL` to the public URLs.
-- Set `TEXSHARE_TRUST_PROXY=true` **only** if the proxy is trusted; otherwise
-  clients can spoof their IP and bypass rate limiting.
+- List the proxy addresses/CIDRs in `TEXSHARE_TRUSTED_PROXIES` (or the
+  **Trusted proxies** field in the wizard). Only those peers may set
+  `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` and `Forwarded`;
+  headers from anyone else are ignored.
 - Set `TEXSHARE_FORCE_SECURE_COOKIES=true` so cookies are always `Secure`.
 - Forward the `Host` header unchanged and add every public hostname to
   `TEXSHARE_ALLOWED_HOSTS` (or register it as a domain in the admin UI).
+- Disable request buffering and body-size limits so large and resumable uploads
+  keep working.
+
+The full, German-language guide (all five proxies, manual DNS, DynDNS, home
+servers, CGNAT/DS-Lite, IPv4/IPv6, TLS and secure admin access) lives in
+[`docs/NETWORK.md`](docs/NETWORK.md).
+
+## Domains and network management
+
+Domain publishing is fully provider-agnostic and split into three independent
+areas you configure in **Settings → Domains & Netzwerk**:
+
+1. **DNS binding** — Cloudflare API (encrypted API token, automatic A/AAAA/CNAME
+   management), manual DNS for any host without an API (TEX Share shows the exact
+   records to create and never fakes them), or no automatic DNS at all.
+2. **Network path** — direct port forwarding, an external reverse proxy, a
+   Cloudflare Tunnel (works behind CGNAT/DS-Lite), a static public IP, or
+   dynamic IP with the built-in DynDNS engine.
+3. **Reverse proxy** — none, Nginx, Caddy, Traefik, Nginx Proxy Manager, HAProxy
+   or a custom proxy, each with a generated configuration snippet.
+
+Each domain can override the global choice. A per-domain check reports DNS
+resolution and target, reachability, HTTPS, certificate validity, detected
+proxy, and public/admin UI reachability, with concrete fixes. The public UI
+(`3535`) and the admin UI (`3636`) keep separate auth; the admin UI is never
+exposed through a proxy unless you explicitly enable it. See
+[`docs/NETWORK.md`](docs/NETWORK.md).
 
 ## Security
 
@@ -338,6 +375,7 @@ verification against the real HTTP handlers.
 - [`docs/INSTALL.md`](docs/INSTALL.md) — install and first-run
 - [`docs/UPDATE.md`](docs/UPDATE.md) — updating safely
 - [`docs/BACKUP.md`](docs/BACKUP.md) — backup and restore
+- [`docs/NETWORK.md`](docs/NETWORK.md) — DNS, reverse proxies, DynDNS, TLS
 - [`docs/SECURITY.md`](docs/SECURITY.md) — security model and hardening
 
 ---

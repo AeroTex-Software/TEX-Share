@@ -2,22 +2,21 @@ package app
 
 import (
 	"context"
-	"crypto/tls"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/AeroTex-Software/TEX-Share/internal/network/proxy"
 	"github.com/AeroTex-Software/TEX-Share/internal/util"
 )
 
 func (a *App) adminListDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.Query(`SELECT d.id, d.hostname, d.enabled, d.verified, d.verification_token, d.is_default,
 		d.tls_status, COALESCE(d.last_checked_at,0), d.last_check_ok, COALESCE(d.last_check_error,''), d.created_at,
+		d.dns_provider, d.dns_record_type, d.dns_target, d.dns_zone_id, d.dns_record_id, d.dns_status,
+		COALESCE(d.dns_checked_at,0), d.dns_ok, COALESCE(d.dns_error,''), d.network_mode, d.proxy_kind,
 		(SELECT COUNT(*) FROM user_domains ud WHERE ud.domain_id = d.id),
 		(SELECT COUNT(*) FROM shares s WHERE s.domain_id = d.id AND s.status NOT IN ('deleted','expired'))
 		FROM domains d ORDER BY d.is_default DESC, d.hostname ASC`)
@@ -29,19 +28,37 @@ func (a *App) adminListDomainsHandler(w http.ResponseWriter, r *http.Request) {
 	out := []Domain{}
 	for rows.Next() {
 		var d Domain
-		var lastOK interface{}
+		var lastOK, dnsOK interface{}
 		if err := rows.Scan(&d.ID, &d.Hostname, &d.Enabled, &d.Verified, &d.VerificationToken, &d.IsDefault,
-			&d.TLSStatus, &d.LastCheckedAt, &lastOK, &d.LastCheckError, &d.CreatedAt, &d.UserCount, &d.ShareCount); err != nil {
+			&d.TLSStatus, &d.LastCheckedAt, &lastOK, &d.LastCheckError, &d.CreatedAt,
+			&d.DNSProvider, &d.DNSRecordType, &d.DNSTarget, &d.DNSZoneID, &d.DNSRecordID, &d.DNSStatus,
+			&d.DNSCheckedAt, &dnsOK, &d.DNSError, &d.NetworkMode, &d.ProxyKind, &d.UserCount, &d.ShareCount); err != nil {
 			continue
 		}
 		if b, ok := lastOK.(int64); ok {
 			v := b == 1
 			d.LastCheckOK = &v
 		}
+		if b, ok := dnsOK.(int64); ok {
+			v := b == 1
+			d.DNSOK = &v
+		}
 		out = append(out, d)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"domains": out})
 }
+
+// domainBinding is the optional DNS/network binding accepted on create/patch.
+type domainBinding struct {
+	DNSProvider   *string `json:"dnsProvider"`
+	DNSRecordType *string `json:"dnsRecordType"`
+	DNSTarget     *string `json:"dnsTarget"`
+	NetworkMode   *string `json:"networkMode"`
+	ProxyKind     *string `json:"proxyKind"`
+}
+
+var validNetworkModes = map[string]bool{"": true, "direct": true, "proxy": true, "tunnel": true, "static": true, "ddns": true}
+var validRecordTypes = map[string]bool{"": true, "A": true, "AAAA": true, "CNAME": true}
 
 func (a *App) adminCreateDomainHandler(w http.ResponseWriter, r *http.Request) {
 	actor := userFromContext(r)
@@ -49,6 +66,7 @@ func (a *App) adminCreateDomainHandler(w http.ResponseWriter, r *http.Request) {
 		Hostname  string `json:"hostname"`
 		Enabled   *bool  `json:"enabled"`
 		IsDefault bool   `json:"isDefault"`
+		domainBinding
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "")
@@ -59,6 +77,11 @@ func (a *App) adminCreateDomainHandler(w http.ResponseWriter, r *http.Request) {
 	host = strings.TrimRight(host, "/")
 	if !util.ValidHostname(host) {
 		writeError(w, http.StatusBadRequest, "invalid_hostname", "")
+		return
+	}
+	binding, berr := a.normalizeBinding(req.domainBinding)
+	if berr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", berr.Error())
 		return
 	}
 	enabled := true
@@ -77,8 +100,11 @@ func (a *App) adminCreateDomainHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	res, err := tx.Exec(`INSERT INTO domains(hostname, enabled, verified, verification_token, is_default, tls_status, created_at)
-		VALUES(?, ?, 0, ?, ?, 'unknown', ?)`, host, boolInt(enabled), util.RandomHex(16), boolInt(req.IsDefault), util.Now())
+	res, err := tx.Exec(`INSERT INTO domains(hostname, enabled, verified, verification_token, is_default, tls_status, created_at,
+		dns_provider, dns_record_type, dns_target, network_mode, proxy_kind)
+		VALUES(?, ?, 0, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?)`,
+		host, boolInt(enabled), util.RandomHex(16), boolInt(req.IsDefault), util.Now(),
+		binding.dnsProvider, binding.dnsRecordType, binding.dnsTarget, binding.networkMode, binding.proxyKind)
 	if err != nil {
 		tx.Rollback()
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -102,7 +128,51 @@ func (a *App) adminCreateDomainHandler(w http.ResponseWriter, r *http.Request) {
 	a.refreshHostCache()
 	a.audit(actor.ID, actor.Username, "domain.create", "domain", fmt.Sprint(id), "success", map[string]any{"hostname": host})
 	d, _ := a.domainByID(id)
-	writeJSON(w, http.StatusCreated, map[string]any{"domain": d})
+	writeJSON(w, http.StatusCreated, map[string]any{"domain": d, "instructions": a.manualInstructions(d)})
+}
+
+type normalizedBinding struct {
+	dnsProvider   string
+	dnsRecordType string
+	dnsTarget     string
+	networkMode   string
+	proxyKind     string
+}
+
+func (a *App) normalizeBinding(b domainBinding) (normalizedBinding, error) {
+	out := normalizedBinding{}
+	if b.DNSProvider != nil {
+		v := strings.ToLower(strings.TrimSpace(*b.DNSProvider))
+		if v != "" && !providerSupportsAPI(v) && v != "manual" && v != "none" {
+			return out, fmt.Errorf("unknown dns provider %q", v)
+		}
+		out.dnsProvider = v
+	}
+	if b.DNSRecordType != nil {
+		v := strings.ToUpper(strings.TrimSpace(*b.DNSRecordType))
+		if !validRecordTypes[v] {
+			return out, fmt.Errorf("invalid record type %q", v)
+		}
+		out.dnsRecordType = v
+	}
+	if b.DNSTarget != nil {
+		out.dnsTarget = strings.TrimSpace(*b.DNSTarget)
+	}
+	if b.NetworkMode != nil {
+		v := strings.ToLower(strings.TrimSpace(*b.NetworkMode))
+		if !validNetworkModes[v] {
+			return out, fmt.Errorf("invalid network mode %q", v)
+		}
+		out.networkMode = v
+	}
+	if b.ProxyKind != nil {
+		v := strings.ToLower(strings.TrimSpace(*b.ProxyKind))
+		if v != "" && !proxy.ValidKind(v) {
+			return out, fmt.Errorf("invalid proxy kind %q", v)
+		}
+		out.proxyKind = v
+	}
+	return out, nil
 }
 
 func (a *App) adminPatchDomainHandler(w http.ResponseWriter, r *http.Request) {
@@ -117,9 +187,15 @@ func (a *App) adminPatchDomainHandler(w http.ResponseWriter, r *http.Request) {
 		Hostname  *string `json:"hostname"`
 		Enabled   *bool   `json:"enabled"`
 		IsDefault *bool   `json:"isDefault"`
+		domainBinding
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "")
+		return
+	}
+	binding, berr := a.normalizeBinding(req.domainBinding)
+	if berr != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", berr.Error())
 		return
 	}
 	tx, err := a.db.Begin()
@@ -139,7 +215,8 @@ func (a *App) adminPatchDomainHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if host != d.Hostname {
-			sets = append(sets, "hostname = ?", "verified = 0", "verification_token = ?")
+			// Changing the hostname invalidates verification and any managed record.
+			sets = append(sets, "hostname = ?", "verified = 0", "verification_token = ?", "dns_record_id = ''", "dns_status = 'unknown'")
 			args = append(args, host, util.RandomHex(16))
 		}
 	}
@@ -156,6 +233,26 @@ func (a *App) adminPatchDomainHandler(w http.ResponseWriter, r *http.Request) {
 		sets = append(sets, "is_default = 1")
 		_, _ = tx.Exec(`INSERT INTO settings(key, value) VALUES('default_domain_id', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, fmt.Sprint(id))
 		_ = a.settings.Set("default_domain_id", fmt.Sprint(id))
+	}
+	if req.DNSProvider != nil {
+		sets = append(sets, "dns_provider = ?", "dns_record_id = ''", "dns_status = 'unknown'")
+		args = append(args, binding.dnsProvider)
+	}
+	if req.DNSRecordType != nil {
+		sets = append(sets, "dns_record_type = ?")
+		args = append(args, binding.dnsRecordType)
+	}
+	if req.DNSTarget != nil {
+		sets = append(sets, "dns_target = ?")
+		args = append(args, binding.dnsTarget)
+	}
+	if req.NetworkMode != nil {
+		sets = append(sets, "network_mode = ?")
+		args = append(args, binding.networkMode)
+	}
+	if req.ProxyKind != nil {
+		sets = append(sets, "proxy_kind = ?")
+		args = append(args, binding.proxyKind)
 	}
 	if len(sets) > 0 {
 		args = append(args, id)
@@ -176,7 +273,7 @@ func (a *App) adminPatchDomainHandler(w http.ResponseWriter, r *http.Request) {
 	a.refreshHostCache()
 	a.audit(actor.ID, actor.Username, "domain.update", "domain", fmt.Sprint(id), "success", nil)
 	updated, _ := a.domainByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"domain": updated})
+	writeJSON(w, http.StatusOK, map[string]any{"domain": updated, "instructions": a.manualInstructions(updated)})
 }
 
 func (a *App) adminDeleteDomainHandler(w http.ResponseWriter, r *http.Request) {
@@ -230,35 +327,32 @@ func (a *App) adminVerifyDomainHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "domain_not_found", "")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	resolver := net.DefaultResolver
-	txts, txtErr := resolver.LookupTXT(ctx, "_texshare-verify."+d.Hostname)
+
+	// Ownership proof: a TXT record at _texshare-verify.<hostname>.
+	txts, txtErr := net.DefaultResolver.LookupTXT(ctx, "_texshare-verify."+d.Hostname)
 	verified := false
 	for _, t := range txts {
 		if util.ConstantEqual(strings.TrimSpace(t), d.VerificationToken) {
 			verified = true
 		}
 	}
-	tlsStatus, reachable, checkErr := checkDomain(ctx, d.Hostname)
-	lastOK := verified || reachable
-	errText := ""
-	if txtErr != nil {
-		errText = "TXT lookup: " + txtErr.Error()
+	_, _ = a.db.Exec(`UPDATE domains SET verified = ? WHERE id = ?`, boolInt(verified), id)
+
+	st := a.verifyDomain(ctx, d)
+	a.storeDomainStatus(d.ID, st)
+	if txtErr != nil && len(st.Errors) == 0 {
+		st.Errors = append(st.Errors, "TXT-Lookup: "+txtErr.Error())
 	}
-	if checkErr != nil {
-		if errText != "" {
-			errText += "; "
-		}
-		errText += checkErr.Error()
-	}
-	_, _ = a.db.Exec(`UPDATE domains SET verified = ?, tls_status = ?, last_checked_at = ?, last_check_ok = ?, last_check_error = ? WHERE id = ?`,
-		boolInt(verified), tlsStatus, util.Now(), boolInt(lastOK), nullString(errText), id)
-	a.audit(actor.ID, actor.Username, "domain.verify", "domain", fmt.Sprint(id), "success", map[string]any{"hostname": d.Hostname, "verified": verified, "reachable": reachable})
+	a.audit(actor.ID, actor.Username, "domain.verify", "domain", fmt.Sprint(id), "success",
+		map[string]any{"hostname": d.Hostname, "verified": verified, "reachable": st.Reachable})
 	updated, _ := a.domainByID(id)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"domain": updated, "dnsVerified": verified, "reachable": reachable, "tlsStatus": tlsStatus,
+		"domain": updated, "status": st,
+		"dnsVerified": verified, "reachable": st.Reachable, "tlsStatus": updated.TLSStatus,
 		"txtRecord": "_texshare-verify." + d.Hostname, "txtValue": d.VerificationToken,
+		"instructions": a.manualInstructions(updated),
 	})
 }
 
@@ -269,86 +363,13 @@ func (a *App) adminCheckDomainHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "domain_not_found", "")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	tlsStatus, reachable, checkErr := checkDomain(ctx, d.Hostname)
-	errText := ""
-	if checkErr != nil {
-		errText = checkErr.Error()
-	}
-	_, _ = a.db.Exec(`UPDATE domains SET tls_status = ?, last_checked_at = ?, last_check_ok = ?, last_check_error = ? WHERE id = ?`,
-		tlsStatus, util.Now(), boolInt(reachable), nullString(errText), id)
+	st := a.verifyDomain(ctx, d)
+	a.storeDomainStatus(d.ID, st)
 	updated, _ := a.domainByID(id)
-	writeJSON(w, http.StatusOK, map[string]any{"domain": updated, "reachable": reachable, "tlsStatus": tlsStatus, "error": errText})
-}
-
-// checkDomain performs a safe reachability probe. Private, loopback and
-// link-local addresses are rejected to prevent SSRF through admin-supplied DNS.
-func checkDomain(ctx context.Context, hostname string) (tlsStatus string, reachable bool, err error) {
-	if !util.ValidHostname(hostname) {
-		return "unknown", false, fmt.Errorf("invalid hostname")
-	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: safeDialControl}
-	transport := &http.Transport{
-		DialContext:         dialer.DialContext,
-		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
-		DisableKeepAlives:   true,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: 5 * time.Second,
-	}
-	client := &http.Client{
-		Timeout:   8 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Get("https://" + hostname + "/healthz")
-	if err != nil {
-		// Try plain HTTP only to report a missing TLS setup.
-		resp2, err2 := (&http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
-			DialContext:       dialer.DialContext,
-			DisableKeepAlives: true,
-		}}).Get("http://" + hostname + "/healthz")
-		if err2 != nil {
-			return "unknown", false, err
-		}
-		defer resp2.Body.Close()
-		if resp2.StatusCode == http.StatusOK {
-			return "missing", true, fmt.Errorf("HTTPS unavailable")
-		}
-		return "missing", false, fmt.Errorf("HTTP status %d", resp2.StatusCode)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if resp.TLS != nil {
-		tlsStatus = "valid"
-	} else {
-		tlsStatus = "missing"
-	}
-	if resp.StatusCode != http.StatusOK {
-		return tlsStatus, false, fmt.Errorf("HTTP status %d", resp.StatusCode)
-	}
-	var probe struct {
-		Service string `json:"service"`
-	}
-	if json.Unmarshal(body, &probe) != nil || probe.Service != "texshare" {
-		return tlsStatus, false, fmt.Errorf("not a TEX Share instance")
-	}
-	return tlsStatus, true, nil
-}
-
-func safeDialControl(network, address string, c syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("unresolvable address")
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("private address blocked")
-	}
-	return nil
+	writeJSON(w, http.StatusOK, map[string]any{
+		"domain": updated, "status": st, "reachable": st.Reachable, "tlsStatus": updated.TLSStatus,
+		"error": strings.Join(st.Errors, "; "),
+	})
 }

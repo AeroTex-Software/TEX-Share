@@ -110,6 +110,52 @@ export interface Domain {
   createdAt: number;
   userCount?: number;
   shareCount?: number;
+  // Flexible DNS / network binding (empty = inherit the global setting).
+  dnsProvider?: string;
+  dnsRecordType?: string;
+  dnsTarget?: string;
+  dnsZoneId?: string;
+  dnsRecordId?: string;
+  dnsStatus?: string;
+  dnsCheckedAt?: number;
+  dnsOk?: boolean;
+  dnsError?: string;
+  networkMode?: string;
+  proxyKind?: string;
+}
+
+export interface NetworkProvider {
+  id: string;
+  label: string;
+  docsUrl?: string;
+}
+
+export interface DNSInstruction {
+  type: string;
+  name: string;
+  content: string;
+  hint?: string;
+}
+
+export interface ProxyGuide {
+  kind: string;
+  label: string;
+  config: string;
+  notes: string[];
+}
+
+export interface NetworkStatus {
+  config: Record<string, string>;
+  providers: string[];
+  proxyKinds: NetworkProvider[];
+  trustedProxies: string[];
+  tokenSet: boolean;
+  guide: ProxyGuide;
+  publicPort: string;
+  adminPort: string;
+  ddns?: Record<string, unknown>;
+  cloudflare?: Record<string, unknown>;
+  tunnel?: Record<string, unknown>;
 }
 
 export interface SessionInfo {

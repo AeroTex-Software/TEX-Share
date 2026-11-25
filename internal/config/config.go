@@ -18,10 +18,11 @@ type Config struct {
 	AdminAddr     string
 	PublicURL     string
 	AdminURL      string
-	AllowedHosts  []string
-	AdminHosts    []string
-	TrustProxy    bool
-	ForceSecure   bool
+	AllowedHosts   []string
+	AdminHosts     []string
+	TrustProxy     bool
+	TrustedProxies []string
+	ForceSecure    bool
 	LogLevel      string
 	AccessLog     bool
 	BackupKeyFile string
@@ -87,6 +88,7 @@ func Load() (*Config, error) {
 		AllowedHosts:  splitList(env("TEXSHARE_ALLOWED_HOSTS", "")),
 		AdminHosts:    splitList(env("TEXSHARE_ADMIN_ALLOWED_HOSTS", "")),
 		TrustProxy:    envBool("TEXSHARE_TRUST_PROXY", false),
+		TrustedProxies: splitList(env("TEXSHARE_TRUSTED_PROXIES", "")),
 		ForceSecure:   envBool("TEXSHARE_FORCE_SECURE_COOKIES", false),
 		LogLevel:      strings.ToLower(env("TEXSHARE_LOG_LEVEL", "info")),
 		AccessLog:     envBool("TEXSHARE_ACCESS_LOG", true),

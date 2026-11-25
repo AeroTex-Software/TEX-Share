@@ -25,6 +25,7 @@
   import ForcedPassword from './views/ForcedPassword.svelte';
   import Login from './views/Login.svelte';
   import Monitoring from './views/Monitoring.svelte';
+  import Network from './views/Network.svelte';
   import NotFound from './views/NotFound.svelte';
   import Profile from './views/Profile.svelte';
   import Settings from './views/Settings.svelte';
@@ -60,6 +61,8 @@
         return { title: t('admin.shares.title'), subtitle: t('admin.shares.subtitle'), active: 'shares' };
       case 'domains':
         return { title: t('admin.domains.title'), subtitle: t('admin.domains.subtitle'), active: 'domains' };
+      case 'network':
+        return { title: t('admin.network.title'), subtitle: t('admin.network.subtitle'), active: 'network' };
       case 'monitoring':
         return { title: t('admin.monitoring.title'), subtitle: t('admin.monitoring.subtitle'), active: 'monitoring' };
       case 'backups':
@@ -114,6 +117,8 @@
           <Shares />
         {:else if section === 'domains'}
           <Domains />
+        {:else if section === 'network'}
+          <Network />
         {:else if section === 'monitoring'}
           <Monitoring />
         {:else if section === 'backups'}

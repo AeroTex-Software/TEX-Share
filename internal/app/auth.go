@@ -41,10 +41,10 @@ func cookieName(realm string) string {
 }
 
 func (a *App) cookieSecure(r *http.Request) bool {
-	if r.TLS != nil || a.cfg.ForceSecure {
+	if a.cfg.ForceSecure {
 		return true
 	}
-	if a.cfg.TrustProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if a.isHTTPS(r) {
 		return true
 	}
 	if strings.HasPrefix(a.cfg.PublicURL, "https://") || strings.HasPrefix(a.cfg.AdminURL, "https://") {
@@ -298,7 +298,7 @@ func (a *App) loginHandler(realm string) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "origin_rejected", "")
 			return
 		}
-		ip := util.ClientIP(r, a.cfg.TrustProxy)
+		ip := a.clientIP(r)
 		rate := float64(a.settings.Int("login_rate_per_minute"))
 		if rate <= 0 {
 			rate = 10
@@ -405,7 +405,7 @@ func (a *App) verifyTOTPHandler(realm string) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "origin_rejected", "")
 			return
 		}
-		ip := util.ClientIP(r, a.cfg.TrustProxy)
+		ip := a.clientIP(r)
 		if !a.loginLimiter.Allow("2fa:"+ip, 10, 10) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited", "")
 			return

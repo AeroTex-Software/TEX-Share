@@ -27,7 +27,7 @@ func (a *App) setupHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "setup_completed", "")
 		return
 	}
-	ip := util.ClientIP(r, a.cfg.TrustProxy)
+	ip := a.clientIP(r)
 	if !a.loginLimiter.Allow("setup:"+ip, 5, 5) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "")
 		return
