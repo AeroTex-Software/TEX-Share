@@ -113,6 +113,7 @@ func (a *App) AdminHandler() http.Handler {
 
 	mux.HandleFunc("GET /api/admin/dashboard", a.requireUser("admin", a.dashboardHandler))
 	mux.HandleFunc("GET /api/admin/monitoring", a.requireUser("admin", a.monitoringHandler))
+	mux.HandleFunc("GET /api/admin/traffic", a.requireUser("admin", a.trafficHandler))
 	mux.HandleFunc("GET /api/admin/stats", a.requireUser("admin", a.adminGlobalStatsHandler))
 
 	mux.HandleFunc("GET /api/admin/profile", a.requireUser("admin", a.profileHandler))

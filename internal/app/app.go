@@ -39,6 +39,12 @@ type App struct {
 	errorCount      int64
 	uploadQueue     int64
 
+	// Monotonic byte counters for the live-traffic dashboard. tx counts bytes
+	// written to clients (downloads), rx counts bytes read from clients
+	// (uploads). They are only ever read via atomic loads and are not persisted.
+	trafficTx int64
+	trafficRx int64
+
 	auditMu       sync.Mutex
 	lastAuditHash string
 

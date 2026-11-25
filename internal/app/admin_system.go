@@ -264,6 +264,16 @@ func (a *App) systemInfo() map[string]any {
 	}
 }
 
+// trafficHandler returns the monotonic network byte counters used by the live
+// traffic chart. The client derives a rate from consecutive samples.
+func (a *App) trafficHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tx": atomic.LoadInt64(&a.trafficTx),
+		"rx": atomic.LoadInt64(&a.trafficRx),
+		"ts": time.Now().UnixMilli(),
+	})
+}
+
 func (a *App) monitoringHandler(w http.ResponseWriter, r *http.Request) {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
@@ -341,30 +351,26 @@ func (a *App) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	var storageUsed, storageReserved int64
 	_ = a.db.QueryRow(`SELECT COALESCE(SUM(storage_used_bytes),0), COALESCE(SUM(storage_reserved_bytes),0) FROM users`).Scan(&storageUsed, &storageReserved)
 
-	type auditItem struct {
-		ID       int64  `json:"id"`
-		TS       int64  `json:"ts"`
-		Actor    string `json:"actor"`
-		Action   string `json:"action"`
-		Object   string `json:"objectType"`
-		ObjectID string `json:"objectId"`
-		Result   string `json:"result"`
+	// Disk capacity for the storage gauge. Best effort: omitted when unavailable.
+	disk := map[string]any{}
+	if total, free, err := diskSpace(a.cfg.DataDir); err == nil {
+		disk["diskTotalBytes"] = total
+		disk["diskFreeBytes"] = free
+		disk["diskUsedBytes"] = total - free
 	}
-	recent := []auditItem{}
-	rows, err := a.db.Query(`SELECT id, ts, actor_username, action, object_type, object_id, result FROM audit_log ORDER BY id DESC LIMIT 12`)
-	if err == nil {
-		for rows.Next() {
-			var it auditItem
-			if rows.Scan(&it.ID, &it.TS, &it.Actor, &it.Action, &it.Object, &it.ObjectID, &it.Result) == nil {
-				recent = append(recent, it)
-			}
-		}
-		rows.Close()
-	}
+
 	var newUsers int64
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM users WHERE created_at >= ?`, dayAgo).Scan(&newUsers)
 	var newShares int64
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM shares WHERE created_at >= ?`, dayAgo).Scan(&newShares)
+
+	usage := map[string]any{
+		"storageUsedBytes": storageUsed, "storageReservedBytes": storageReserved,
+		"downloads24h": downloads24, "views24h": views24, "bytesServed24h": bytes24,
+	}
+	for k, v := range disk {
+		usage[k] = v
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"counts": map[string]any{
@@ -373,13 +379,9 @@ func (a *App) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 			"domains": domains, "files": files, "pendingScans": pendingScans, "backups": backups,
 			"newUsers24h": newUsers, "newShares24h": newShares,
 		},
-		"usage": map[string]any{
-			"storageUsedBytes": storageUsed, "storageReservedBytes": storageReserved,
-			"downloads24h": downloads24, "views24h": views24, "bytesServed24h": bytes24,
-		},
-		"recentAudit": recent,
-		"system":      a.systemInfo(),
-		"monitoring":  map[string]any{"tunnel": tunnelStatus(a), "clamav": clamavStatus(a)},
+		"usage":      usage,
+		"system":     a.systemInfo(),
+		"monitoring": map[string]any{"tunnel": tunnelStatus(a), "clamav": clamavStatus(a)},
 	})
 }
 

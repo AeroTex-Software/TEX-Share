@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -14,6 +15,9 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status int
 	bytes  int64
+	// tx, when set, receives every byte written to the client so the dashboard
+	// can report live download throughput.
+	tx *int64
 }
 
 func (s *statusRecorder) WriteHeader(code int) {
@@ -29,11 +33,29 @@ func (s *statusRecorder) Write(p []byte) (int, error) {
 	}
 	n, err := s.ResponseWriter.Write(p)
 	s.bytes += int64(n)
+	if s.tx != nil && n > 0 {
+		atomic.AddInt64(s.tx, int64(n))
+	}
 	return n, err
 }
 
 // Unwrap enables http.ResponseController / Flush on the wrapped writer.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// countingReadCloser counts bytes read from a request body (uploads) into a
+// shared counter so the dashboard can report live upload throughput.
+type countingReadCloser struct {
+	io.ReadCloser
+	counter *int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	if n > 0 && c.counter != nil {
+		atomic.AddInt64(c.counter, int64(n))
+	}
+	return n, err
+}
 
 func (a *App) commonMiddleware(next http.Handler, admin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +76,15 @@ func (a *App) commonMiddleware(next http.Handler, admin bool) http.Handler {
 			writeError(rec, http.StatusMisdirectedRequest, "invalid_host", "")
 			a.log.Warn("request rejected: invalid host", "host", hostOnly(r.Host))
 			return
+		}
+		// Live-traffic accounting covers the public listener only, so the admin
+		// UI's own polling does not pollute the numbers. tx counts bytes written
+		// to clients (downloads), rx counts bytes read from clients (uploads).
+		if !admin {
+			rec.tx = &a.trafficTx
+			if r.Body != nil && r.Body != http.NoBody {
+				r.Body = &countingReadCloser{ReadCloser: r.Body, counter: &a.trafficRx}
+			}
 		}
 		defer func() {
 			if v := recover(); v != nil {
