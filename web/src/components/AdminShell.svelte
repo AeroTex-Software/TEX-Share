@@ -39,7 +39,7 @@
   }
 </script>
 
-<div class="flex min-h-full flex-col lg:flex-row">
+<div class="flex min-h-screen flex-col lg:flex-row">
   <!-- Mobile top bar -->
   <div class="sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-950 lg:hidden">
     <button

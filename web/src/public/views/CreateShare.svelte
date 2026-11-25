@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, copyText, errorText } from '../../lib/api';
+  import { randomId, webCryptoAvailable } from '../../lib/crypto';
   import { createE2EEShareCrypto, encryptManifest, keyFragment } from '../../lib/e2ee';
   import { formatBytes, formatDateTime, fromDatetimeLocal, toDatetimeLocal } from '../../lib/format';
   import { t } from '../../lib/i18n';
@@ -76,6 +77,7 @@
   $: totalPlain = picked.reduce((sum, p) => sum + p.file.size, 0);
   $: allUploaded = picked.length > 0 && picked.every((p) => p.result);
   $: anyFailed = picked.some((p) => p.error);
+  $: e2eeAvailable = webCryptoAvailable();
 
   function chooseType(value: ShareType): void {
     shareType = value;
@@ -115,7 +117,7 @@
         toast(`${file.name}: ${t('create.fileTooLarge')}`, 'error');
         continue;
       }
-      accepted.push({ file, id: crypto.randomUUID(), progress: { loaded: 0, total: file.size, phase: 'uploading' }, result: null, error: '' });
+      accepted.push({ file, id: randomId(), progress: { loaded: 0, total: file.size, phase: 'uploading' }, result: null, error: '' });
     }
     let next = [...picked, ...accepted];
     if (shareType === 'file') next = next.slice(0, 1);
@@ -151,6 +153,10 @@
 
   async function runUploads(): Promise<void> {
     if (uploading || !picked.length) return;
+    if (e2eeEnabled && !e2eeAvailable) {
+      toast(t('create.e2ee.unavailable'), 'error');
+      return;
+    }
     uploading = true;
     let masterKey: Uint8Array | null = null;
     try {
@@ -220,6 +226,10 @@
 
   async function create(): Promise<void> {
     if (creating) return;
+    if (e2eeEnabled && !e2eeAvailable) {
+      toast(t('create.e2ee.unavailable'), 'error');
+      return;
+    }
     creating = true;
     try {
       const body: Record<string, unknown> = {
@@ -411,15 +421,26 @@
       </div>
 
       <div class="mt-6 rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
-        <label class="flex cursor-pointer items-start gap-3">
-          <input type="checkbox" class="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-700 dark:bg-slate-900" bind:checked={e2eeEnabled} />
+        <label class="flex items-start gap-3 {e2eeAvailable ? 'cursor-pointer' : 'cursor-not-allowed opacity-70'}">
+          <input
+            type="checkbox"
+            class="mt-1 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 disabled:cursor-not-allowed dark:border-slate-700 dark:bg-slate-900"
+            bind:checked={e2eeEnabled}
+            disabled={!e2eeAvailable}
+          />
           <span>
             <span class="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100"><Icon name="lock" size={15} />{t('create.e2ee')}</span>
             <span class="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">{t('create.e2eeHint')}</span>
           </span>
         </label>
 
-        {#if e2eeEnabled}
+        {#if !e2eeAvailable}
+          <p class="mt-3 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+            <Icon name="warning" size={14} class="mt-0.5" />{t('create.e2ee.unavailable')}
+          </p>
+        {/if}
+
+        {#if e2eeEnabled && e2eeAvailable}
           <div class="mt-4 space-y-3 border-t border-slate-100 pt-4 dark:border-slate-800">
             <div>
               <span class="label">{t('create.e2ee.mode')}</span>

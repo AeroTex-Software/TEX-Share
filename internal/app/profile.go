@@ -319,7 +319,7 @@ func (a *App) userStatsHandler(w http.ResponseWriter, r *http.Request) {
 	var views, downloads, bytes int64
 	_ = a.db.QueryRow(`SELECT COALESCE(SUM(st.views),0), COALESCE(SUM(st.downloads),0), COALESCE(SUM(st.bytes),0)
 		FROM stats_daily st JOIN shares s ON s.id = st.share_id WHERE s.owner_id = ?`, u.ID).Scan(&views, &downloads, &bytes)
-	var recent []map[string]any
+	recent := []map[string]any{}
 	rows, err := a.db.Query(`SELECT id, type, COALESCE(title,''), slug, size_bytes, download_count, view_count, created_at, status
 		FROM shares WHERE owner_id = ? ORDER BY created_at DESC LIMIT 5`, u.ID)
 	if err == nil {

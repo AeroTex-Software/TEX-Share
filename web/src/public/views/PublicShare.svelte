@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, copyText, downloadHref, errorText, fetchBlob, mediaURL, saveBlob } from '../../lib/api';
+  import { webCryptoAvailable } from '../../lib/crypto';
   import {
     decryptContainerStream,
     decryptContainerToBlob,
@@ -71,6 +72,7 @@
   $: displayLink = isE2ee ? manifest?.linkUrl || '' : payload?.linkUrl || '';
   $: shareType = isE2ee ? manifest?.type || payload?.type || '' : payload?.type || '';
   $: downloadsRemaining = payload?.downloadsRemaining;
+  $: cryptoOk = webCryptoAvailable();
 
   onMount(load);
 
@@ -105,6 +107,12 @@
 
   async function tryDecrypt(): Promise<void> {
     if (!payload || !e2eeKey || !payload.e2eeManifest) return;
+    if (!webCryptoAvailable()) {
+      e2eeKey = null;
+      manifest = null;
+      decryptError = t('share.e2eeUnavailable');
+      return;
+    }
     decrypting = true;
     decryptError = '';
     try {
@@ -149,6 +157,10 @@
   async function submitE2EE(event: Event): Promise<void> {
     event.preventDefault();
     if (!payload || !e2eeInput.trim()) return;
+    if (!webCryptoAvailable()) {
+      decryptError = t('share.e2eeUnavailable');
+      return;
+    }
     decrypting = true;
     decryptError = '';
     try {
@@ -467,6 +479,11 @@
             <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
               {payload.e2eeMode === 'password' ? t('share.e2eePasswordHint') : t('share.e2eeKeyHint')}
             </p>
+            {#if !cryptoOk}
+              <p class="mt-3 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                <Icon name="warning" size={16} class="mt-0.5" />{t('share.e2eeUnavailable')}
+              </p>
+            {/if}
             <form class="mt-5 space-y-3" on:submit={submitE2EE}>
               <div>
                 <label class="label" for="e2ee-secret">

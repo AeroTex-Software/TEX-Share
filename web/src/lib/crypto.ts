@@ -10,6 +10,28 @@ export function randomBytes(length: number): Uint8Array {
   return out;
 }
 
+/**
+ * Web Crypto's subtle API (AES-GCM, HKDF, digest) is only exposed in secure
+ * contexts (HTTPS or localhost). Over plain HTTP on a LAN address the browser
+ * omits it entirely, so client-side E2EE is impossible and callers must guard
+ * against this instead of failing with a cryptic TypeError.
+ */
+export function webCryptoAvailable(): boolean {
+  return typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined';
+}
+
+/** RFC 4122 v4 UUID with a fallback for insecure contexts. */
+export function randomId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = randomBytes(16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = toHex(bytes);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function randomKey(): Uint8Array {
   return randomBytes(32);
 }

@@ -49,7 +49,12 @@
     loading = true;
     error = '';
     try {
-      stats = await api<Stats>('/stats');
+      const data = await api<Stats>('/stats');
+      stats = {
+        ...data,
+        recentShares: data.recentShares || [],
+        storage: data.storage || { used: 0, reserved: 0, limit: 0 }
+      };
       activity = await loadActivity(8).catch(() => []);
     } catch (err) {
       error = errorText(err);

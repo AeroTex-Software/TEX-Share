@@ -473,6 +473,7 @@
             </button>
           {/each}
         </div>
+        <p class="hint">{t('admin.users.domainsHint')}</p>
       </div>
     {/if}
 

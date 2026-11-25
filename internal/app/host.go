@@ -119,8 +119,16 @@ func (a *App) defaultDomain() (*Domain, error) {
 }
 
 // userDomainAllowed checks explicit grants. Administrators may use all domains.
+// A user without any explicit grant is allowed every enabled domain, so that a
+// freshly created account can share immediately; assigning specific domains
+// restricts the user to exactly those.
 func (a *App) userDomainAllowed(u *User, domainID int64) bool {
 	if u.Role == "admin" {
+		return true
+	}
+	var grants int
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM user_domains WHERE user_id = ?`, u.ID).Scan(&grants)
+	if grants == 0 {
 		return true
 	}
 	var n int
@@ -134,8 +142,13 @@ func (a *App) allowedDomainsFor(u *User) ([]Domain, error) {
 		FROM domains d`
 	args := []any{}
 	if u.Role != "admin" {
-		query += ` JOIN user_domains ud ON ud.domain_id = d.id AND ud.user_id = ?`
-		args = append(args, u.ID)
+		// No explicit grants means every enabled domain is available.
+		var grants int
+		_ = a.db.QueryRow(`SELECT COUNT(*) FROM user_domains WHERE user_id = ?`, u.ID).Scan(&grants)
+		if grants > 0 {
+			query += ` JOIN user_domains ud ON ud.domain_id = d.id AND ud.user_id = ?`
+			args = append(args, u.ID)
+		}
 	}
 	query += ` WHERE d.enabled = 1 ORDER BY d.is_default DESC, d.hostname ASC`
 	rows, err := a.db.Query(query, args...)

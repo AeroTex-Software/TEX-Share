@@ -42,7 +42,7 @@
   }
 </script>
 
-<div class="flex min-h-full flex-col">
+<div class="flex min-h-screen flex-col">
   <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/85 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85">
     <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4">
       <a href="/" class="flex min-w-0 items-center gap-2.5" on:click|preventDefault={() => go('/')}>

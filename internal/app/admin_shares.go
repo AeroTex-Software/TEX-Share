@@ -15,7 +15,7 @@ func (a *App) adminGetShareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := a.shareDTO(s, false)
-	var daily []map[string]any
+	daily := []map[string]any{}
 	rows, err := a.db.Query(`SELECT day, views, downloads, bytes FROM stats_daily WHERE share_id = ? ORDER BY day DESC LIMIT 30`, s.ID)
 	if err == nil {
 		for rows.Next() {
