@@ -1,0 +1,34 @@
+# TEX Share — single-container deployment.
+#
+#   1. cp .env.example .env  and edit the values.
+#   2. docker compose up -d --build
+#   3. Open the admin UI on port 3636 and run the setup wizard.
+#
+# All persistent state lives in ./data on the host.
+services:
+  texshare:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/aerotex-software/tex-share:latest
+    container_name: tex-share
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      # Public UI. Change the host port (left side) to taste.
+      - "3535:3535"
+      # Admin UI. Keep this private — do not expose it to the internet.
+      - "3636:3636"
+    volumes:
+      - ./data:/data
+    # SQLite + local files are modest, but ZIP streaming and ClamAV benefit
+    # from a little headroom. Tune for your host.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3535/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true

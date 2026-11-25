@@ -1,0 +1,29 @@
+# Local state and secrets — never commit these.
+/data/
+data/
+.testdata/
+.smoketest/
+*.key
+secret.key
+backup.key
+.env
+.env.*
+!.env.example
+
+# Build output
+texshare
+texshare.exe
+web/node_modules/
+web/.vite/
+web/coverage/
+node_modules/
+
+# NOTE: web/dist/ is intentionally committed. It is produced by `npm run build`
+# and embedded into the Go binary (see web/embed.go) so that a plain `go build`
+# works from a fresh clone without Node installed.
+
+# Scratch files
+*.out
+*.log
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+# Build artifacts and local state that must never reach the image.
+.git
+.gitignore
+**/node_modules
+web/node_modules
+web/dist
+web/.vite
+texshare.exe
+texshare
+data
+.testdata
+.smoketest
+*.out
+*.log
+.env
+.env.*
+!.env.example
+docs
+*.md
+.DS_Store

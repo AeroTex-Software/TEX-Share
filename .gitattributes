@@ -1,0 +1,30 @@
+# Normalise line endings in the repository.
+# Text files are stored with LF; shell scripts and Go sources must stay LF so
+# they work unchanged inside the Linux container.
+* text=auto eol=lf
+
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.go            text eol=lf
+*.sql           text eol=lf
+*.ts            text eol=lf
+*.svelte        text eol=lf
+*.js            text eol=lf
+*.css           text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.md            text eol=lf
+
+# Windows-only files keep CRLF.
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
+
+# Binary assets are never touched.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.woff          binary
+*.woff2         binary
+*.exe           binary
