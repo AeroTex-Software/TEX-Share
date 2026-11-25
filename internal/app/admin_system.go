@@ -56,9 +56,8 @@ var editableSettings = map[string]settingKind{
 	"antivirus_enabled":             {kind: "bool"},
 	"freshclam_interval_hours":      {kind: "int", min: 1, max: 168},
 	"cloudflare_enabled":            {kind: "bool"},
-	"cf_account_id":                 {kind: "string", maxLen: 64},
-	"cf_zone_id":                    {kind: "string", maxLen: 64},
 	"cf_tunnel_name":                {kind: "string", maxLen: 64},
+	"cf_hostname":                   {kind: "string", maxLen: 253},
 	"backup_schedule":               {kind: "enum", enum: []string{"off", "daily", "weekly"}},
 	"backup_hour":                   {kind: "int", min: 0, max: 23},
 	"backup_retention_count":        {kind: "int", min: 1, max: 365},
@@ -114,6 +113,9 @@ func (a *App) validateSetting(key, value string) (string, error) {
 		}
 		if key == "cf_tunnel_name" && value != "" && !util.ValidSlug(value) {
 			return "", fmt.Errorf("%s must be a slug", key)
+		}
+		if key == "cf_hostname" && value != "" && !util.ValidHostname(value) {
+			return "", fmt.Errorf("%s must be a hostname", key)
 		}
 	case "stringlist":
 		var list []string
@@ -604,116 +606,95 @@ func (a *App) cloudflareStatusHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cloudflare": a.cloudflare.Status(),
 		"tunnel":     a.tunnel.Status(),
-		"settings": map[string]any{
-			"accountId":  a.settings.Get("cf_account_id"),
-			"zoneId":     a.settings.Get("cf_zone_id"),
-			"tunnelName": a.settings.Get("cf_tunnel_name"),
-			"enabled":    a.settings.Bool("cloudflare_enabled"),
-			"tokenSet":   a.settings.Get("cf_api_token_enc") != "",
-		},
 	})
 }
 
-func (a *App) cloudflareConfigureHandler(w http.ResponseWriter, r *http.Request) {
+// cloudflareLoginHandler starts the browser-based `cloudflared tunnel login`
+// flow and returns the dashboard URL the administrator must open.
+func (a *App) cloudflareLoginHandler(w http.ResponseWriter, r *http.Request) {
+	url, err := a.cloudflare.StartLogin()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "cloudflare_error", err.Error())
+		return
+	}
+	a.auditRequest(r, "cloudflare.login", "cloudflare", "", "success", nil)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "url": url})
+}
+
+func (a *App) cloudflareCancelHandler(w http.ResponseWriter, r *http.Request) {
+	a.cloudflare.CancelLogin()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// cloudflareProvisionHandler creates (or reuses) the tunnel, points the hostname
+// at it and writes the cloudflared configuration, then enables the connector.
+func (a *App) cloudflareProvisionHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		APIToken   string `json:"apiToken"`
-		AccountID  string `json:"accountId"`
-		ZoneID     string `json:"zoneId"`
+		Hostname   string `json:"hostname"`
 		TunnelName string `json:"tunnelName"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "")
 		return
 	}
-	values := map[string]string{}
-	if req.APIToken != "" {
-		if len(req.APIToken) < 20 || len(req.APIToken) > 200 {
-			writeError(w, http.StatusBadRequest, "invalid_token", "")
-			return
-		}
-		sealed, err := a.secrets.Seal("cloudflare_api", []byte(strings.TrimSpace(req.APIToken)))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "")
-			return
-		}
-		values["cf_api_token_enc"] = sealed
+	hostname := strings.ToLower(strings.TrimSpace(req.Hostname))
+	if hostname == "" || !util.ValidHostname(hostname) {
+		writeError(w, http.StatusBadRequest, "invalid_hostname", "")
+		return
 	}
-	if req.AccountID != "" {
-		if len(req.AccountID) > 64 {
-			writeError(w, http.StatusBadRequest, "invalid_account", "")
-			return
-		}
-		values["cf_account_id"] = strings.TrimSpace(req.AccountID)
-	}
-	if req.ZoneID != "" {
-		if len(req.ZoneID) > 64 {
-			writeError(w, http.StatusBadRequest, "invalid_zone", "")
-			return
-		}
-		values["cf_zone_id"] = strings.TrimSpace(req.ZoneID)
-	}
-	if req.TunnelName != "" {
-		if !util.ValidSlug(req.TunnelName) {
+	values := map[string]string{"cf_hostname": hostname}
+	if name := strings.TrimSpace(req.TunnelName); name != "" {
+		if !util.ValidSlug(name) {
 			writeError(w, http.StatusBadRequest, "invalid_tunnel_name", "")
 			return
 		}
-		values["cf_tunnel_name"] = req.TunnelName
-	}
-	if len(values) == 0 {
-		writeError(w, http.StatusBadRequest, "nothing_to_update", "")
-		return
+		values["cf_tunnel_name"] = name
 	}
 	if err := a.settings.SetMany(values); err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "")
 		return
 	}
-	a.auditRequest(r, "cloudflare.configure", "cloudflare", "", "success", map[string]any{"keys": sortedKeys(values)})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func (a *App) cloudflareVerifyHandler(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := contextWithTimeout(r, 20*time.Second)
+	ctx, cancel := contextWithTimeout(r, 90*time.Second)
 	defer cancel()
-	res, err := a.cloudflare.VerifyToken(ctx)
+	creds, err := a.cloudflare.EnsureTunnel(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "cloudflare_error", err.Error())
 		return
 	}
-	a.auditRequest(r, "cloudflare.verify", "cloudflare", "", "success", nil)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": res})
-}
-
-func (a *App) cloudflareProvisionHandler(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Hostname string `json:"hostname"`
-	}
-	if err := readJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "")
+	if err := a.cloudflare.RouteDNS(ctx, creds.TunnelName, hostname); err != nil {
+		writeError(w, http.StatusBadRequest, "dns_error", err.Error())
 		return
 	}
-	ctx, cancel := contextWithTimeout(r, 60*time.Second)
-	defer cancel()
-	tunnelID, err := a.cloudflare.EnsureTunnel(ctx)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "cloudflare_error", err.Error())
+	if err := a.cloudflare.WriteConfig(creds, hostname); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	if req.Hostname != "" {
-		if !util.ValidHostname(req.Hostname) {
-			writeError(w, http.StatusBadRequest, "invalid_hostname", "")
-			return
-		}
-		if err := a.cloudflare.EnsureDNS(ctx, req.Hostname, tunnelID); err != nil {
-			writeError(w, http.StatusBadRequest, "dns_error", err.Error())
-			return
-		}
+	if err := a.settings.SetMany(map[string]string{
+		"cloudflare_enabled": "1",
+		"cf_tunnel_id":       creds.TunnelID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "")
+		return
 	}
-	a.auditRequest(r, "cloudflare.provision", "cloudflare", tunnelID, "success", map[string]any{"hostname": req.Hostname})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tunnelId": tunnelID})
+	a.auditRequest(r, "cloudflare.provision", "cloudflare", creds.TunnelID, "success", map[string]any{"hostname": hostname})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cloudflare": a.cloudflare.Status(), "tunnel": a.tunnel.Status()})
 }
 
 func (a *App) cloudflareDisableHandler(w http.ResponseWriter, r *http.Request) {
 	_ = a.settings.Set("cloudflare_enabled", "0")
 	a.auditRequest(r, "cloudflare.disable", "cloudflare", "", "success", nil)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// cloudflareDisconnectHandler removes the local certificate, credentials and
+// configuration and forgets the tunnel.
+func (a *App) cloudflareDisconnectHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := contextWithTimeout(r, 30*time.Second)
+	defer cancel()
+	if err := a.cloudflare.Disconnect(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	a.auditRequest(r, "cloudflare.disconnect", "cloudflare", "", "success", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

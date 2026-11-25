@@ -17,16 +17,34 @@
 
   let open = false;
 
-  const nav = [
-    { key: 'dashboard', href: '/', icon: 'dashboard', label: 'admin.nav.dashboard' },
-    { key: 'users', href: '/users', icon: 'users', label: 'admin.nav.users' },
-    { key: 'shares', href: '/shares', icon: 'shares', label: 'admin.nav.shares' },
-    { key: 'domains', href: '/domains', icon: 'globe', label: 'admin.nav.domains' },
-    { key: 'monitoring', href: '/monitoring', icon: 'activity', label: 'admin.nav.monitoring' },
-    { key: 'backups', href: '/backups', icon: 'backup', label: 'admin.nav.backups' },
-    { key: 'audit', href: '/audit', icon: 'shield', label: 'admin.nav.audit' },
-    { key: 'settings', href: '/settings', icon: 'settings', label: 'admin.nav.settings' },
-    { key: 'profile', href: '/profile', icon: 'user', label: 'admin.nav.profile' }
+  const groups = [
+    {
+      label: 'admin.nav.group.overview',
+      items: [
+        { key: 'dashboard', href: '/', icon: 'dashboard', label: 'admin.nav.dashboard' },
+        { key: 'monitoring', href: '/monitoring', icon: 'activity', label: 'admin.nav.monitoring' }
+      ]
+    },
+    {
+      label: 'admin.nav.group.management',
+      items: [
+        { key: 'users', href: '/users', icon: 'users', label: 'admin.nav.users' },
+        { key: 'shares', href: '/shares', icon: 'shares', label: 'admin.nav.shares' },
+        { key: 'domains', href: '/domains', icon: 'globe', label: 'admin.nav.domains' }
+      ]
+    },
+    {
+      label: 'admin.nav.group.system',
+      items: [
+        { key: 'backups', href: '/backups', icon: 'backup', label: 'admin.nav.backups' },
+        { key: 'audit', href: '/audit', icon: 'shield', label: 'admin.nav.audit' },
+        { key: 'settings', href: '/settings', icon: 'settings', label: 'admin.nav.settings' }
+      ]
+    },
+    {
+      label: 'admin.nav.group.account',
+      items: [{ key: 'profile', href: '/profile', icon: 'user', label: 'admin.nav.profile' }]
+    }
   ];
 
   function go(href: string): void {
@@ -39,9 +57,9 @@
   }
 </script>
 
-<div class="flex min-h-screen flex-col lg:flex-row">
+<div class="min-h-screen lg:flex">
   <!-- Mobile top bar -->
-  <div class="sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-950 lg:hidden">
+  <div class="sticky top-0 z-50 flex h-16 items-center gap-3 border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-950/90 lg:hidden">
     <button
       type="button"
       class="rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -55,13 +73,13 @@
     </span>
   </div>
 
-  <!-- Sidebar -->
+  <!-- Sidebar: sticky on desktop, off-canvas drawer on mobile -->
   <aside
-    class="fixed inset-y-0 left-0 z-40 w-72 transform overflow-y-auto border-r border-slate-200 bg-white transition-transform duration-200 dark:border-slate-800 dark:bg-slate-950 lg:static lg:translate-x-0 {open
-      ? 'translate-x-0'
+    class="fixed inset-y-0 left-0 z-50 flex w-72 shrink-0 flex-col overflow-y-auto border-r border-slate-200 bg-white transition-transform duration-200 dark:border-slate-800 dark:bg-slate-900 lg:sticky lg:top-0 lg:bottom-auto lg:z-30 lg:h-dvh lg:translate-x-0 {open
+      ? 'translate-x-0 shadow-2xl'
       : '-translate-x-full'}"
   >
-    <div class="flex h-16 items-center gap-2.5 border-b border-slate-200 px-5 dark:border-slate-800">
+    <div class="flex h-16 shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 dark:border-slate-800">
       {#if logoUrl}
         <img src={logoUrl} alt="" class="h-8 w-auto max-w-[9rem] object-contain" />
       {:else}
@@ -75,32 +93,45 @@
       </div>
     </div>
 
-    <nav class="flex flex-col gap-0.5 p-3" aria-label={t('admin.title')}>
-      {#each nav as item}
-        <button
-          type="button"
-          class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition {isCurrent(item.key)
-            ? 'bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300'
-            : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'}"
-          on:click={() => go(item.href)}
-        >
-          <Icon name={item.icon} size={18} />
-          <span class="flex-1 text-left">{t(item.label)}</span>
-          {#if item.key === 'dashboard' && $unreadNotifications > 0}
-            <span class="badge-red">{ $unreadNotifications > 9 ? '9+' : $unreadNotifications }</span>
-          {/if}
-        </button>
+    <nav class="flex-1 space-y-5 px-3 py-4" aria-label={t('admin.title')}>
+      {#each groups as group}
+        <div>
+          <p class="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">{t(group.label)}</p>
+          <div class="space-y-0.5">
+            {#each group.items as item}
+              <button
+                type="button"
+                aria-current={isCurrent(item.key) ? 'page' : undefined}
+                class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition {isCurrent(item.key)
+                  ? 'bg-brand-600 text-white shadow-sm shadow-brand-600/30 dark:bg-brand-500'
+                  : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/70'}"
+                on:click={() => go(item.href)}
+              >
+                <Icon name={item.icon} size={18} />
+                <span class="flex-1 text-left">{t(item.label)}</span>
+                {#if item.key === 'dashboard' && $unreadNotifications > 0}
+                  <span class={isCurrent(item.key) ? 'rounded-full bg-white/25 px-2 py-0.5 text-[11px] font-bold text-white' : 'badge-red'}>{$unreadNotifications > 9 ? '9+' : $unreadNotifications}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        </div>
       {/each}
+
       {#if publicUrl}
-        <a class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800" href={publicUrl} data-native>
-          <Icon name="external" size={18} />
-          <span class="flex-1 text-left">{t('admin.nav.public')}</span>
-        </a>
+        <div>
+          <div class="space-y-0.5">
+            <a class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800/70" href={publicUrl} data-native>
+              <Icon name="external" size={18} />
+              <span class="flex-1 text-left">{t('admin.nav.public')}</span>
+            </a>
+          </div>
+        </div>
       {/if}
     </nav>
 
-    <div class="border-t border-slate-200 p-3 dark:border-slate-800">
-      <div class="mb-2 flex items-center gap-3 px-1">
+    <div class="shrink-0 border-t border-slate-200 p-3 dark:border-slate-800">
+      <div class="mb-2 flex items-center gap-3 rounded-xl px-1 py-1">
         <Avatar user={$user} size={34} />
         <div class="min-w-0">
           <p class="truncate text-sm font-semibold text-slate-800 dark:text-slate-200">{$user?.displayName}</p>
@@ -120,14 +151,14 @@
   {#if open}
     <button
       type="button"
-      class="fixed inset-0 z-30 bg-slate-950/50 lg:hidden"
+      class="fixed inset-0 z-40 bg-slate-950/50 lg:hidden"
       aria-label={t('common.close')}
       on:click={() => (open = false)}
     />
   {/if}
 
   <div class="flex min-w-0 flex-1 flex-col">
-    <header class="hidden h-16 items-center justify-end gap-2 border-b border-slate-200 bg-white/85 px-6 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85 lg:flex">
+    <header class="sticky top-0 z-30 hidden h-16 items-center justify-end gap-2 border-b border-slate-200 bg-white/85 px-6 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85 lg:flex">
       <LocaleTheme compact />
     </header>
     <main class="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8">

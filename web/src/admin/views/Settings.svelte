@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { api, errorText, mediaURL } from '../../lib/api';
+  import { onDestroy, onMount } from 'svelte';
+  import { api, copyText, errorText, mediaURL } from '../../lib/api';
   import { t } from '../../lib/i18n';
-  import { toast } from '../../lib/stores';
+  import { confirmDialog, toast } from '../../lib/stores';
   import type { SystemInfo } from '../../lib/types';
   import Icon from '../../components/Icon.svelte';
   import Toggle from '../../components/Toggle.svelte';
@@ -15,9 +15,19 @@
   }
 
   interface CloudflareResponse {
-    cloudflare: { enabled: boolean; configured: boolean; accountId?: string; zoneId?: string; tunnelName?: string; tunnelId?: string };
-    tunnel: { enabled: boolean; status: string; message?: string; pid?: number; restarts?: number };
-    settings: { accountId: string; zoneId: string; tunnelName: string; enabled: boolean; tokenSet: boolean };
+    cloudflare: {
+      connected: boolean;
+      enabled: boolean;
+      available: boolean;
+      availableError?: string;
+      loginState: string;
+      loginUrl: string;
+      loginError?: string;
+      tunnelId: string;
+      tunnelName: string;
+      hostname: string;
+    };
+    tunnel: { enabled: boolean; status: string; message?: string; pid?: number; startedAt?: number; restarts?: number };
   }
 
   const GIB = 1024 * 1024 * 1024;
@@ -106,14 +116,15 @@
 
   // Cloudflare
   let cf: CloudflareResponse | null = null;
-  let cfToken = '';
-  let cfAccountId = '';
-  let cfZoneId = '';
   let cfTunnelName = '';
   let cfProvisionHost = '';
   let cfBusy = '';
+  let cfPollTimer: ReturnType<typeof setInterval> | null = null;
 
   onMount(load);
+  onDestroy(() => {
+    if (cfPollTimer) clearInterval(cfPollTimer);
+  });
 
   function bool(key: string): boolean {
     const v = (raw[key] || '').toLowerCase();
@@ -225,11 +236,23 @@
   async function loadCloudflare(): Promise<void> {
     try {
       cf = await api<CloudflareResponse>('/cloudflare');
-      cfAccountId = cf.settings.accountId || '';
-      cfZoneId = cf.settings.zoneId || '';
-      cfTunnelName = cf.settings.tunnelName || '';
+      cfTunnelName = cf.cloudflare.tunnelName || 'tex-share';
+      cfProvisionHost = cf.cloudflare.hostname || '';
+      syncCfPoll();
     } catch {
       // Cloudflare is optional.
+    }
+  }
+
+  // syncCfPoll keeps polling while the browser login is pending so the UI
+  // switches to "connected" automatically once Cloudflare redirects back.
+  function syncCfPoll(): void {
+    const waiting = cf?.cloudflare.loginState === 'waiting';
+    if (waiting && !cfPollTimer) {
+      cfPollTimer = setInterval(() => void loadCloudflare(), 2000);
+    } else if (!waiting && cfPollTimer) {
+      clearInterval(cfPollTimer);
+      cfPollTimer = null;
     }
   }
 
@@ -357,17 +380,10 @@
     }
   }
 
-  async function cfConfigure(): Promise<void> {
-    cfBusy = 'configure';
+  async function cfLogin(): Promise<void> {
+    cfBusy = 'login';
     try {
-      const body: Record<string, string> = {};
-      if (cfToken.trim()) body.apiToken = cfToken.trim();
-      if (cfAccountId.trim()) body.accountId = cfAccountId.trim();
-      if (cfZoneId.trim()) body.zoneId = cfZoneId.trim();
-      if (cfTunnelName.trim()) body.tunnelName = cfTunnelName.trim();
-      await api('/cloudflare/configure', { method: 'POST', body });
-      cfToken = '';
-      toast(t('admin.settings.saved'), 'success');
+      await api('/cloudflare/login', { method: 'POST', body: {} });
       await loadCloudflare();
     } catch (err) {
       toast(errorText(err), 'error');
@@ -376,11 +392,11 @@
     }
   }
 
-  async function cfVerify(): Promise<void> {
-    cfBusy = 'verify';
+  async function cfCancelLogin(): Promise<void> {
+    cfBusy = 'cancel';
     try {
-      await api('/cloudflare/verify', { method: 'POST', body: {} });
-      toast(t('admin.common.success'), 'success');
+      await api('/cloudflare/cancel', { method: 'POST', body: {} });
+      await loadCloudflare();
     } catch (err) {
       toast(errorText(err), 'error');
     } finally {
@@ -389,9 +405,14 @@
   }
 
   async function cfProvision(): Promise<void> {
+    const hostname = cfProvisionHost.trim();
+    if (!hostname) {
+      toast(t('admin.settings.cfHostRequired'), 'error');
+      return;
+    }
     cfBusy = 'provision';
     try {
-      await api('/cloudflare/provision', { method: 'POST', body: { hostname: cfProvisionHost.trim() } });
+      await api('/cloudflare/provision', { method: 'POST', body: { hostname, tunnelName: cfTunnelName.trim() } });
       toast(t('admin.common.success'), 'success');
       await loadCloudflare();
     } catch (err) {
@@ -414,14 +435,57 @@
     }
   }
 
+  async function cfDisconnect(): Promise<void> {
+    const ok = await confirmDialog({
+      title: t('admin.settings.cfDisconnect'),
+      message: t('admin.settings.cfDisconnectConfirm'),
+      confirmLabel: t('admin.settings.cfDisconnect'),
+      danger: true
+    });
+    if (!ok) return;
+    cfBusy = 'disconnect';
+    try {
+      await api('/cloudflare/disconnect', { method: 'POST', body: {} });
+      toast(t('admin.common.success'), 'success');
+      await loadCloudflare();
+    } catch (err) {
+      toast(errorText(err), 'error');
+    } finally {
+      cfBusy = '';
+    }
+  }
+
   async function toggleCfEnabled(): Promise<void> {
-    const next = !(cf?.settings.enabled ?? false);
+    const next = !(cf?.cloudflare.enabled ?? false);
     try {
       await api('/settings', { method: 'PATCH', body: { settings: { cloudflare_enabled: next ? '1' : '0' } } });
       await loadCloudflare();
     } catch (err) {
       toast(errorText(err), 'error');
     }
+  }
+
+  function cfTunnelLabel(): string {
+    return t('admin.settings.cfTunnel.' + (cf?.tunnel?.status || 'stopped'));
+  }
+
+  function cfTunnelDot(): string {
+    switch (cf?.tunnel?.status) {
+      case 'running':
+        return 'bg-emerald-500';
+      case 'error':
+      case 'unavailable':
+        return 'bg-rose-500';
+      case 'unconfigured':
+        return 'bg-amber-500';
+      default:
+        return 'bg-slate-400';
+    }
+  }
+
+  function cfCopyLogin(): void {
+    const url = cf?.cloudflare.loginUrl || '';
+    if (url) copyText(url).then(() => toast(t('common.copied'), 'success'));
   }
 </script>
 
@@ -673,52 +737,93 @@
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h2 class="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-white"><Icon name="cloud" size={18} />{t('admin.settings.cloudflare')}</h2>
         {#if cf}
-          <span class={cf.settings.tokenSet ? 'badge-green' : 'badge-slate'}>{cf.settings.tokenSet ? t('admin.settings.cfStatus') : t('admin.settings.cfNotConfigured')}</span>
+          {#if cf.cloudflare.enabled && cf.tunnel?.status === 'running'}
+            <span class="badge-green">{t('admin.settings.cfState.running')}</span>
+          {:else if cf.cloudflare.connected}
+            <span class="badge-amber">{t('admin.settings.cfState.connected')}</span>
+          {:else}
+            <span class="badge-slate">{t('admin.settings.cfState.disconnected')}</span>
+          {/if}
         {/if}
       </div>
       <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">{t('admin.settings.cloudflareHint')}</p>
 
       {#if cf}
-        <div class="mt-4 space-y-4">
-          <div>
-            <label class="label" for="s-cftoken">{t('admin.settings.cfApiToken')}</label>
-            <input id="s-cftoken" class="input" type="password" autocomplete="off" placeholder={cf.settings.tokenSet ? '••••••••••••••••' : ''} bind:value={cfToken} disabled={cfBusy === 'configure'} />
-            <p class="hint">{t('admin.settings.cfApiTokenHint')}</p>
-          </div>
-          <div class="grid gap-4 sm:grid-cols-3">
-            <div>
-              <label class="label" for="s-cfaccount">{t('admin.settings.cfAccount')}</label>
-              <input id="s-cfaccount" class="input" bind:value={cfAccountId} disabled={cfBusy === 'configure'} />
-            </div>
-            <div>
-              <label class="label" for="s-cfzone">{t('admin.settings.cfZone')}</label>
-              <input id="s-cfzone" class="input" bind:value={cfZoneId} disabled={cfBusy === 'configure'} />
-            </div>
-            <div>
-              <label class="label" for="s-cftunnel">{t('admin.settings.cfTunnelName')}</label>
-              <input id="s-cftunnel" class="input" bind:value={cfTunnelName} disabled={cfBusy === 'configure'} />
-            </div>
-          </div>
+        {#if !cf.cloudflare.available}
+          <p class="mt-4 flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+            <Icon name="warning" size={16} />
+            <span>{t('admin.settings.cfUnavailable')}</span>
+          </p>
+        {/if}
 
-          <div class="grid gap-3 sm:grid-cols-2">
+        {#if !cf.cloudflare.connected}
+          <!-- Step 1: browser login -->
+          <div class="mt-4 rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+            {#if cf.cloudflare.loginState === 'waiting'}
+              <p class="text-sm font-medium text-slate-800 dark:text-slate-200">{t('admin.settings.cfLoginWaiting')}</p>
+              {#if cf.cloudflare.loginUrl}
+                <div class="mt-3 flex flex-wrap items-center gap-2">
+                  <a class="btn-primary btn-sm" href={cf.cloudflare.loginUrl} target="_blank" rel="noreferrer"><Icon name="external" size={15} />{t('admin.settings.cfOpenDashboard')}</a>
+                  <button type="button" class="btn-secondary btn-sm" on:click={cfCopyLogin}><Icon name="copy" size={15} />{t('common.copy')}</button>
+                  <button type="button" class="btn-ghost btn-sm" on:click={cfCancelLogin} disabled={cfBusy === 'cancel'}><Icon name="close" size={15} />{t('common.cancel')}</button>
+                </div>
+                <p class="mt-2 break-all font-mono text-xs text-slate-500 dark:text-slate-400">{cf.cloudflare.loginUrl}</p>
+              {:else}
+                <p class="mt-3 flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400"><Icon name="spinner" size={15} class="animate-spin" />{t('admin.settings.cfLoginPreparing')}</p>
+              {/if}
+              {#if cf.cloudflare.loginError}
+                <p class="mt-2 text-sm text-rose-600 dark:text-rose-400">{cf.cloudflare.loginError}</p>
+              {/if}
+            {:else}
+              <p class="text-sm text-slate-500 dark:text-slate-400">{t('admin.settings.cfConnectHint')}</p>
+              <button type="button" class="btn-primary mt-3" on:click={cfLogin} disabled={cfBusy === 'login' || !cf.cloudflare.available}>
+                {#if cfBusy === 'login'}<Icon name="spinner" size={16} class="animate-spin" />{:else}<Icon name="cloud" size={16} />{/if}{t('admin.settings.cfConnect')}
+              </button>
+              {#if cf.cloudflare.loginState === 'error' && cf.cloudflare.loginError}
+                <p class="mt-2 text-sm text-rose-600 dark:text-rose-400">{cf.cloudflare.loginError}</p>
+              {/if}
+            {/if}
+          </div>
+        {:else}
+          <!-- Step 2: tunnel, hostname, connector -->
+          <div class="mt-4 space-y-4">
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label class="label" for="s-cftunnel">{t('admin.settings.cfTunnelName')}</label>
+                <input id="s-cftunnel" class="input" bind:value={cfTunnelName} disabled={cfBusy === 'provision'} />
+              </div>
+              <div>
+                <label class="label" for="s-cfhost">{t('admin.settings.cfProvisionHost')}</label>
+                <input id="s-cfhost" class="input" placeholder="share.example.com" bind:value={cfProvisionHost} disabled={cfBusy === 'provision'} />
+              </div>
+            </div>
+
             <div on:click={() => toggleCfEnabled()}>
-              <Toggle checked={cf.settings.enabled} label={t('admin.settings.cfEnabled')} />
+              <Toggle checked={cf.cloudflare.enabled} label={t('admin.settings.cfEnabled')} disabled={cfBusy === 'disable'} />
             </div>
-            <div>
-              <label class="label" for="s-cfhost">{t('admin.settings.cfProvisionHost')}</label>
-              <input id="s-cfhost" class="input" placeholder="share.example.com" bind:value={cfProvisionHost} disabled={cfBusy === 'provision'} />
-            </div>
-          </div>
 
-          <div class="flex flex-wrap gap-2">
-            <button type="button" class="btn-primary btn-sm" on:click={cfConfigure} disabled={cfBusy === 'configure'}>
-              {#if cfBusy === 'configure'}<Icon name="spinner" size={15} class="animate-spin" />{:else}<Icon name="check" size={15} />{/if}{t('admin.settings.cfConfigure')}
-            </button>
-            <button type="button" class="btn-secondary btn-sm" on:click={cfVerify} disabled={cfBusy === 'verify'}><Icon name="shield" size={15} />{t('admin.settings.cfVerify')}</button>
-            <button type="button" class="btn-secondary btn-sm" on:click={cfProvision} disabled={cfBusy === 'provision'}><Icon name="network" size={15} />{t('admin.settings.cfProvision')}</button>
-            <button type="button" class="btn-ghost btn-sm text-rose-600 dark:text-rose-400" on:click={cfDisable} disabled={cfBusy === 'disable'}><Icon name="ban" size={15} />{t('admin.settings.cfDisable')}</button>
+            <div class="rounded-xl border border-slate-200 p-3 text-sm dark:border-slate-800">
+              <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span class="font-medium text-slate-700 dark:text-slate-300">{t('admin.settings.cfStatus')}:</span>
+                <span class="inline-flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                  <span class="h-2 w-2 rounded-full {cfTunnelDot()}"></span>
+                  {cfTunnelLabel()}
+                </span>
+                {#if cf.cloudflare.tunnelId}<span class="font-mono text-xs text-slate-400">{cf.cloudflare.tunnelId}</span>{/if}
+                {#if cf.cloudflare.hostname}<span class="text-slate-500 dark:text-slate-400">→ {cf.cloudflare.hostname}</span>{/if}
+              </div>
+              {#if cf.tunnel?.message}<p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{cf.tunnel.message}</p>{/if}
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+              <button type="button" class="btn-primary btn-sm" on:click={cfProvision} disabled={cfBusy === 'provision' || !cf.cloudflare.available}>
+                {#if cfBusy === 'provision'}<Icon name="spinner" size={15} class="animate-spin" />{:else}<Icon name="network" size={15} />{/if}{t('admin.settings.cfProvision')}
+              </button>
+              <button type="button" class="btn-secondary btn-sm" on:click={cfDisable} disabled={cfBusy === 'disable' || !cf.cloudflare.enabled}><Icon name="ban" size={15} />{t('admin.settings.cfDisable')}</button>
+              <button type="button" class="btn-ghost btn-sm text-rose-600 dark:text-rose-400" on:click={cfDisconnect} disabled={cfBusy === 'disconnect'}><Icon name="trash" size={15} />{t('admin.settings.cfDisconnect')}</button>
+            </div>
           </div>
-        </div>
+        {/if}
       {/if}
     </section>
 

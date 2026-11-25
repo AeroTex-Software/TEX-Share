@@ -53,7 +53,7 @@ type App struct {
 
 	// Optional integrations, initialised in New.
 	clamav     *clamAV
-	cloudflare *cloudflareClient
+	cloudflare *cloudflareManager
 	tunnel     *cloudflaredTunnel
 
 	// domain cache for Host validation

@@ -272,10 +272,13 @@ The bundled image includes `clamd`, `freshclam` and `clamdscan`.
 ## Cloudflare Tunnel
 
 Admins can expose shares on a public hostname without opening inbound ports.
-Configure an API token, account/zone IDs and a tunnel name in
-**Settings → Cloudflare**, then provision a hostname. TEX Share creates the
-tunnel, the DNS record and the ingress rules, and supervises the `cloudflared`
-process. This integration is entirely optional.
+Open **Settings → Cloudflare** and click *Connect with Cloudflare*: TEX Share
+runs `cloudflared tunnel login` and shows the Cloudflare dashboard link, where
+you authorise the domain in the browser. No API token is required. Enter the
+public hostname and provision the tunnel — TEX Share creates the tunnel, the DNS
+record and the ingress rules, and supervises the `cloudflared` process. The
+account certificate and credentials are stored under `<data>/cloudflare/`. This
+integration is entirely optional.
 
 ## Reverse proxy and TLS
 

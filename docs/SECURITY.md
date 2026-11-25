@@ -153,12 +153,15 @@ Applied to every request by the common middleware:
 | --- | --- | --- |
 | `secret.key` | `<data>/secret.key` | Root for HKDF-derived subkeys (audit HMAC, recovery-code hashes, sealing integration secrets) |
 | `backup.key` | `<data>/backup.key` (or `TEXSHARE_BACKUP_KEY_FILE`) | Encrypts automatic backups |
-| Cloudflare token | Database, sealed with a derived key | Cloudflare API access |
+| Cloudflare certificate | `<data>/cloudflare/home/.cloudflared/cert.pem` | Cloudflare account authorisation for the tunnel |
 
 - `secret.key` and `backup.key` are **never written to the database or logs**.
-- Integration secrets (e.g. the Cloudflare API token) are sealed with
-  AES-GCM under a key derived from `secret.key`, and are stripped from API
-  responses.
+- Integration secrets (e.g. TOTP seeds) are sealed with AES-GCM under a key
+  derived from `secret.key`, and are stripped from API responses.
+- The Cloudflare tunnel is authorised with a browser login
+  (`cloudflared tunnel login`) instead of an API token; the resulting account
+  certificate and tunnel credentials never leave the data directory and are not
+  exposed through the API.
 - Losing `secret.key` invalidates stored integration secrets and existing TOTP
   enrolments; losing `backup.key` makes encrypted backups unrecoverable.
 

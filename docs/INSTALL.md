@@ -259,10 +259,13 @@ never served.
 ### Cloudflare Tunnel
 
 Admins can publish shares on a public hostname without opening inbound ports.
-Add an API token, account and zone IDs and a tunnel name in
-**Admin → Settings → Cloudflare**, then provision a hostname. TEX Share creates
-the tunnel, DNS record and ingress rules and supervises `cloudflared`. This is
-optional and requires `cloudflared` (bundled in the image).
+In **Admin → Settings → Cloudflare**, click *Connect with Cloudflare*. TEX Share
+runs `cloudflared tunnel login` and shows the Cloudflare dashboard link, where
+you authorise the domain in the browser — no API token is needed. Enter the
+public hostname and provision the tunnel; TEX Share creates the tunnel, DNS
+record and ingress rules and supervises `cloudflared`. The account certificate
+and credentials are kept under `<data>/cloudflare/`. This is optional and
+requires `cloudflared` (bundled in the image).
 
 ---
 

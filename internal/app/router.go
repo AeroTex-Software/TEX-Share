@@ -175,10 +175,11 @@ func (a *App) AdminHandler() http.Handler {
 	mux.HandleFunc("DELETE /api/admin/backups/{id}", a.requireUser("admin", a.deleteBackupHandler))
 
 	mux.HandleFunc("GET /api/admin/cloudflare", a.requireUser("admin", a.cloudflareStatusHandler))
-	mux.HandleFunc("POST /api/admin/cloudflare/configure", a.requireUser("admin", a.cloudflareConfigureHandler))
-	mux.HandleFunc("POST /api/admin/cloudflare/verify", a.requireUser("admin", a.cloudflareVerifyHandler))
+	mux.HandleFunc("POST /api/admin/cloudflare/login", a.requireUser("admin", a.cloudflareLoginHandler))
+	mux.HandleFunc("POST /api/admin/cloudflare/cancel", a.requireUser("admin", a.cloudflareCancelHandler))
 	mux.HandleFunc("POST /api/admin/cloudflare/provision", a.requireUser("admin", a.cloudflareProvisionHandler))
 	mux.HandleFunc("POST /api/admin/cloudflare/disable", a.requireUser("admin", a.cloudflareDisableHandler))
+	mux.HandleFunc("POST /api/admin/cloudflare/disconnect", a.requireUser("admin", a.cloudflareDisconnectHandler))
 
 	mux.Handle("/api/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "")

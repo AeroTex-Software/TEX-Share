@@ -133,7 +133,7 @@
           </div>
           <div class="flex items-center justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2.5 dark:border-slate-800">
             <span class="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200"><Icon name="cloud" size={16} />Cloudflare</span>
-            <span class={data.monitoring.cloudflare?.configured ? 'badge-green' : 'badge-slate'}>{data.monitoring.cloudflare?.configured ? t('common.enabled') : t('admin.settings.cfNotConfigured')}</span>
+            <span class={data.monitoring.cloudflare?.enabled ? 'badge-green' : data.monitoring.cloudflare?.connected ? 'badge-amber' : 'badge-slate'}>{data.monitoring.cloudflare?.enabled ? t('common.enabled') : data.monitoring.cloudflare?.connected ? t('admin.settings.cfState.connected') : t('admin.settings.cfState.disconnected')}</span>
           </div>
         </div>
 

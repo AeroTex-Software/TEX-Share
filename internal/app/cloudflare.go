@@ -1,7 +1,7 @@
 package app
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,10 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,306 +21,462 @@ import (
 	"github.com/AeroTex-Software/TEX-Share/internal/util"
 )
 
-const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
-
-// cloudflareClient talks to the Cloudflare API with a scoped API token. The
-// token is stored encrypted with the installation master key.
-type cloudflareClient struct {
+// cloudflareManager drives a locally-managed Cloudflare Tunnel through the
+// cloudflared CLI. Authorisation happens with `cloudflared tunnel login`, which
+// opens the Cloudflare dashboard in the browser and stores an account
+// certificate (cert.pem). No API token is required anywhere in this flow.
+//
+// Everything lives below <data>/cloudflare so it survives container restarts:
+//
+//	<data>/cloudflare/home/.cloudflared/cert.pem   account certificate
+//	<data>/cloudflare/home/.cloudflared/<id>.json  tunnel credentials
+//	<data>/cloudflare/config.yml                   tunnel configuration
+type cloudflareManager struct {
 	app *App
+
+	mu           sync.Mutex
+	loginCmd     *exec.Cmd
+	loginURL     string
+	loginState   string // idle | waiting | done | error
+	loginErr     string
+	loginStarted int64
 }
 
-func newCloudflare(a *App) *cloudflareClient { return &cloudflareClient{app: a} }
-
-type cfError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+func newCloudflare(a *App) *cloudflareManager {
+	return &cloudflareManager{app: a, loginState: "idle"}
 }
 
-type cfEnvelope struct {
-	Success bool            `json:"success"`
-	Errors  []cfError       `json:"errors"`
-	Result  json.RawMessage `json:"result"`
+func (m *cloudflareManager) dir() string     { return filepath.Join(m.app.cfg.DataDir, "cloudflare") }
+func (m *cloudflareManager) homeDir() string { return filepath.Join(m.dir(), "home") }
+func (m *cloudflareManager) cfDir() string   { return filepath.Join(m.homeDir(), ".cloudflared") }
+func (m *cloudflareManager) certPath() string {
+	return filepath.Join(m.cfDir(), "cert.pem")
+}
+func (m *cloudflareManager) configPath() string { return filepath.Join(m.dir(), "config.yml") }
+func (m *cloudflareManager) credPath(id string) string {
+	return filepath.Join(m.cfDir(), id+".json")
 }
 
-type cfTunnel struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	CreatedAt  string `json:"created_at"`
-	Connections []struct {
-		ID         string `json:"id"`
-		ColoName   string `json:"colo_name"`
-		IsPendingReconnect bool `json:"is_pending_reconnect"`
-	} `json:"connections"`
-}
+func (m *cloudflareManager) tunnelID() string { return m.app.settings.Get("cf_tunnel_id") }
 
-type cfDNSRecord struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Content string `json:"content"`
-	Proxied bool   `json:"proxied"`
-}
-
-func (c *cloudflareClient) enabled() bool {
-	return c.app.cfg.CloudflareOn || c.app.settings.Bool("cloudflare_enabled")
-}
-
-func (c *cloudflareClient) apiToken() (string, error) {
-	enc := c.app.settings.Get("cf_api_token_enc")
-	if enc == "" {
-		return "", errors.New("kein Cloudflare API-Token hinterlegt")
-	}
-	raw, err := c.app.secrets.Open("cloudflare_api", enc)
-	if err != nil {
-		return "", fmt.Errorf("API-Token konnte nicht entschlüsselt werden: %w", err)
-	}
-	return string(raw), nil
-}
-
-func (c *cloudflareClient) tunnelToken() (string, error) {
-	enc := c.app.settings.Get("cf_tunnel_token_enc")
-	if enc == "" {
-		return "", errors.New("kein Tunnel-Token hinterlegt")
-	}
-	raw, err := c.app.secrets.Open("cloudflare_tunnel", enc)
-	if err != nil {
-		return "", fmt.Errorf("Tunnel-Token konnte nicht entschlüsselt werden: %w", err)
-	}
-	return string(raw), nil
-}
-
-func (c *cloudflareClient) call(ctx context.Context, method, path string, body any, out any) error {
-	token, err := c.apiToken()
-	if err != nil {
-		return err
-	}
-	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(raw)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, cloudflareAPIBase+path, reader)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("Cloudflare API nicht erreichbar: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return err
-	}
-	var env cfEnvelope
-	if err := json.Unmarshal(raw, &env); err != nil {
-		return fmt.Errorf("unerwartete Cloudflare-Antwort (HTTP %d)", resp.StatusCode)
-	}
-	if !env.Success {
-		msg := "Cloudflare API-Fehler"
-		if len(env.Errors) > 0 {
-			parts := make([]string, 0, len(env.Errors))
-			for _, e := range env.Errors {
-				parts = append(parts, fmt.Sprintf("%s (%d)", e.Message, e.Code))
-			}
-			msg = strings.Join(parts, "; ")
-		}
-		return errors.New(msg)
-	}
-	if out != nil && len(env.Result) > 0 {
-		if err := json.Unmarshal(env.Result, out); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// VerifyToken checks that the stored API token is valid and returns its status.
-func (c *cloudflareClient) VerifyToken(ctx context.Context) (map[string]any, error) {
-	var res struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
-	if err := c.call(ctx, http.MethodGet, "/user/tokens/verify", nil, &res); err != nil {
-		return nil, err
-	}
-	return map[string]any{"id": res.ID, "status": res.Status}, nil
-}
-
-// ListTunnels returns all tunnels of the configured account.
-func (c *cloudflareClient) ListTunnels(ctx context.Context) ([]cfTunnel, error) {
-	account := c.app.settings.Get("cf_account_id")
-	if account == "" {
-		return nil, errors.New("Cloudflare Account-ID fehlt")
-	}
-	var tunnels []cfTunnel
-	err := c.call(ctx, http.MethodGet, "/accounts/"+account+"/cfd_tunnel?is_deleted=false", nil, &tunnels)
-	return tunnels, err
-}
-
-// CreateTunnel creates a named tunnel in the configured account.
-func (c *cloudflareClient) CreateTunnel(ctx context.Context, name string) (cfTunnel, error) {
-	account := c.app.settings.Get("cf_account_id")
-	if account == "" {
-		return cfTunnel{}, errors.New("Cloudflare Account-ID fehlt")
-	}
-	var t cfTunnel
-	err := c.call(ctx, http.MethodPost, "/accounts/"+account+"/cfd_tunnel", map[string]any{
-		"name": name, "config_src": "cloudflare",
-	}, &t)
-	return t, err
-}
-
-// TunnelToken fetches the connector token for a tunnel.
-func (c *cloudflareClient) TunnelToken(ctx context.Context, id string) (string, error) {
-	account := c.app.settings.Get("cf_account_id")
-	if account == "" {
-		return "", errors.New("Cloudflare Account-ID fehlt")
-	}
-	var token string
-	if err := c.call(ctx, http.MethodGet, "/accounts/"+account+"/cfd_tunnel/"+id+"/token", nil, &token); err != nil {
-		return "", err
-	}
-	if token == "" {
-		return "", errors.New("Cloudflare lieferte keinen Tunnel-Token")
-	}
-	return token, nil
-}
-
-// EnsureTunnel reuses the configured tunnel or creates it, then stores the
-// connector token encrypted. It returns the tunnel ID.
-func (c *cloudflareClient) EnsureTunnel(ctx context.Context) (string, error) {
-	name := strings.TrimSpace(c.app.settings.Get("cf_tunnel_name"))
+func (m *cloudflareManager) tunnelName() string {
+	name := strings.TrimSpace(m.app.settings.Get("cf_tunnel_name"))
 	if name == "" {
 		name = "tex-share"
 	}
-	tunnels, err := c.ListTunnels(ctx)
-	if err != nil {
-		return "", err
-	}
-	var existing *cfTunnel
-	for i := range tunnels {
-		if tunnels[i].Name == name {
-			existing = &tunnels[i]
-			break
-		}
-	}
-	created := false
-	if existing == nil {
-		t, err := c.CreateTunnel(ctx, name)
-		if err != nil {
-			return "", err
-		}
-		existing = &t
-		created = true
-	}
-	token, err := c.TunnelToken(ctx, existing.ID)
-	if err != nil {
-		return "", err
-	}
-	sealed, err := c.app.secrets.Seal("cloudflare_tunnel", []byte(token))
-	if err != nil {
-		return "", err
-	}
-	values := map[string]string{
-		"cf_tunnel_token_enc": sealed,
-		"cf_tunnel_id":        existing.ID,
-	}
-	if created {
-		values["cf_tunnel_managed"] = "1"
-	}
-	if err := c.app.settings.SetMany(values); err != nil {
-		return "", err
-	}
-	return existing.ID, nil
+	return name
 }
 
-// EnsureDNS points hostname at the tunnel with a proxied CNAME.
-func (c *cloudflareClient) EnsureDNS(ctx context.Context, hostname, tunnelID string) error {
-	zone := c.app.settings.Get("cf_zone_id")
-	if zone == "" {
-		return errors.New("Cloudflare Zone-ID fehlt")
-	}
-	hostname = strings.ToLower(strings.TrimSpace(hostname))
-	if hostname == "" {
-		return errors.New("Hostname fehlt")
-	}
-	target := tunnelID + ".cfargotunnel.com"
-	var records []cfDNSRecord
-	if err := c.call(ctx, http.MethodGet, "/zones/"+zone+"/dns_records?name="+hostname, nil, &records); err != nil {
-		return err
-	}
-	payload := map[string]any{
-		"type": "CNAME", "name": hostname, "content": target, "proxied": true, "ttl": 1,
-		"comment": "TEX Share tunnel",
-	}
-	for _, rec := range records {
-		if rec.Type == "CNAME" && strings.EqualFold(rec.Content, target) {
-			return nil
-		}
-		if err := c.call(ctx, http.MethodPut, "/zones/"+zone+"/dns_records/"+rec.ID, payload, nil); err != nil {
-			return err
-		}
-		return nil
-	}
-	return c.call(ctx, http.MethodPost, "/zones/"+zone+"/dns_records", payload, nil)
+// connected reports whether an account certificate is present, which means the
+// administrator completed the browser login at least once.
+func (m *cloudflareManager) connected() bool {
+	fi, err := os.Stat(m.certPath())
+	return err == nil && fi.Size() > 0
 }
 
-// RemoveDNS deletes the DNS record for a hostname managed by TEX Share.
-func (c *cloudflareClient) RemoveDNS(ctx context.Context, hostname string) error {
-	zone := c.app.settings.Get("cf_zone_id")
-	if zone == "" {
-		return errors.New("Cloudflare Zone-ID fehlt")
+func (m *cloudflareManager) enabled() bool {
+	return m.app.cfg.CloudflareOn || m.app.settings.Bool("cloudflare_enabled")
+}
+
+func (m *cloudflareManager) binary() (string, error) {
+	path, err := exec.LookPath(m.app.cfg.Cloudflared)
+	if err != nil {
+		return "", fmt.Errorf("cloudflared wurde nicht gefunden (%q)", m.app.cfg.Cloudflared)
 	}
-	var records []cfDNSRecord
-	if err := c.call(ctx, http.MethodGet, "/zones/"+zone+"/dns_records?name="+strings.ToLower(hostname), nil, &records); err != nil {
-		return err
+	return path, nil
+}
+
+// env returns the child environment with HOME/USERPROFILE redirected so that
+// cloudflared keeps its certificate and credentials inside the data directory.
+func (m *cloudflareManager) env() []string {
+	overrides := map[string]string{
+		"HOME":               m.homeDir(),
+		"USERPROFILE":        m.homeDir(),
+		"TUNNEL_ORIGIN_CERT": m.certPath(),
 	}
-	for _, rec := range records {
-		if !strings.HasSuffix(rec.Content, ".cfargotunnel.com") {
+	out := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, kv := range os.Environ() {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if _, ok := overrides[key]; ok {
 			continue
 		}
-		if err := c.call(ctx, http.MethodDelete, "/zones/"+zone+"/dns_records/"+rec.ID, nil, nil); err != nil {
-			return err
+		out = append(out, kv)
+	}
+	for k, v := range overrides {
+		out = append(out, k+"="+v)
+	}
+	return out
+}
+
+func (m *cloudflareManager) ensureDirs() error {
+	return os.MkdirAll(m.cfDir(), 0o750)
+}
+
+func (m *cloudflareManager) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	bin, err := m.binary()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = m.env()
+	return cmd, nil
+}
+
+// run executes a cloudflared subcommand to completion and returns its output.
+func (m *cloudflareManager) run(ctx context.Context, args ...string) (string, error) {
+	if err := m.ensureDirs(); err != nil {
+		return "", err
+	}
+	cmd, err := m.command(ctx, args...)
+	if err != nil {
+		return "", err
+	}
+	setProcAttrs(cmd)
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	if err != nil {
+		msg := strings.TrimSpace(text)
+		if msg == "" {
+			msg = err.Error()
 		}
+		return text, errors.New(msg)
+	}
+	return text, nil
+}
+
+/* -------------------------------------------------------------------------- */
+/* Browser login                                                              */
+/* -------------------------------------------------------------------------- */
+
+var cfLoginURLRe = regexp.MustCompile(`https://dash\.cloudflare\.com/\S+`)
+
+// LoginState reports the progress of the current/last login attempt.
+func (m *cloudflareManager) LoginState() map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return map[string]any{"state": m.loginState, "url": m.loginURL, "error": m.loginErr}
+}
+
+// StartLogin launches `cloudflared tunnel login` and returns the dashboard URL
+// the administrator must open. The process keeps running in the background
+// until Cloudflare redirects the browser back to it.
+func (m *cloudflareManager) StartLogin() (string, error) {
+	m.mu.Lock()
+	if m.loginCmd != nil {
+		url := m.loginURL
+		m.mu.Unlock()
+		if url != "" {
+			return url, nil
+		}
+		return "", errors.New("eine Anmeldung läuft bereits")
+	}
+	m.loginState = "waiting"
+	m.loginURL = ""
+	m.loginErr = ""
+	m.loginStarted = util.Now()
+	m.mu.Unlock()
+
+	if err := m.ensureDirs(); err != nil {
+		m.failLogin(err)
+		return "", err
+	}
+	cmd, err := m.command(context.Background(), "tunnel", "login")
+	if err != nil {
+		m.failLogin(err)
+		return "", err
+	}
+	setProcAttrs(cmd)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		m.failLogin(err)
+		return "", err
+	}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		pr.Close()
+		m.failLogin(err)
+		return "", err
+	}
+	pw.Close()
+	m.mu.Lock()
+	m.loginCmd = cmd
+	m.mu.Unlock()
+	go m.consumeLogin(pr, cmd)
+
+	// Wait briefly for the URL so the UI can show it immediately.
+	deadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.Lock()
+		url, state, errMsg := m.loginURL, m.loginState, m.loginErr
+		m.mu.Unlock()
+		switch {
+		case url != "":
+			return url, nil
+		case state == "error":
+			return "", errors.New(errMsg)
+		case state == "done":
+			return "", nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return "", nil
+}
+
+func (m *cloudflareManager) consumeLogin(r io.ReadCloser, cmd *exec.Cmd) {
+	defer r.Close()
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	var tail []string
+	for scanner.Scan() {
+		line := scanner.Text()
+		tail = append(tail, line)
+		if len(tail) > 12 {
+			tail = tail[1:]
+		}
+		if m.loginURL == "" {
+			if u := cfLoginURLRe.FindString(line); u != "" {
+				m.mu.Lock()
+				m.loginURL = u
+				m.mu.Unlock()
+			}
+		}
+	}
+	waitErr := cmd.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.loginCmd = nil
+	if m.loginState != "waiting" {
+		return // cancelled
+	}
+	if waitErr == nil && m.connected() {
+		m.loginState = "done"
+		m.loginErr = ""
+		return
+	}
+	m.loginState = "error"
+	msg := strings.TrimSpace(strings.Join(tail, " "))
+	if msg == "" && waitErr != nil {
+		msg = waitErr.Error()
+	}
+	if msg == "" {
+		msg = "Anmeldung fehlgeschlagen"
+	}
+	m.loginErr = msg
+}
+
+func (m *cloudflareManager) failLogin(err error) {
+	m.mu.Lock()
+	m.loginState = "error"
+	m.loginErr = err.Error()
+	m.mu.Unlock()
+}
+
+// CancelLogin aborts a pending login.
+func (m *cloudflareManager) CancelLogin() {
+	m.mu.Lock()
+	cmd := m.loginCmd
+	m.loginCmd = nil
+	m.loginState = "idle"
+	m.loginURL = ""
+	m.loginErr = ""
+	m.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
+		terminateProcess(cmd.Process)
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tunnel management                                                          */
+/* -------------------------------------------------------------------------- */
+
+type cfCredentials struct {
+	AccountTag   string `json:"AccountTag"`
+	TunnelSecret string `json:"TunnelSecret"`
+	TunnelID     string `json:"TunnelID"`
+	TunnelName   string `json:"TunnelName"`
+}
+
+var cfTunnelIDRe = regexp.MustCompile(`with id ([0-9a-fA-F-]{36})`)
+
+// findCredentials locates a tunnel credentials file, optionally matching name.
+func (m *cloudflareManager) findCredentials(name string) (cfCredentials, string, bool) {
+	entries, err := os.ReadDir(m.cfDir())
+	if err != nil {
+		return cfCredentials{}, "", false
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(m.cfDir(), e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var c cfCredentials
+		if json.Unmarshal(raw, &c) != nil || c.TunnelID == "" {
+			continue
+		}
+		if name == "" || c.TunnelName == name {
+			return c, path, true
+		}
+	}
+	return cfCredentials{}, "", false
+}
+
+// EnsureTunnel reuses an existing tunnel/credentials file or creates a new
+// locally-managed tunnel through cloudflared.
+func (m *cloudflareManager) EnsureTunnel(ctx context.Context) (cfCredentials, error) {
+	if !m.connected() {
+		return cfCredentials{}, errors.New("nicht mit Cloudflare verbunden")
+	}
+	name := m.tunnelName()
+	if c, _, ok := m.findCredentials(name); ok {
+		_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
+		return c, nil
+	}
+	out, err := m.run(ctx, "tunnel", "create", name)
+	if err != nil {
+		// A tunnel with this name may already exist remotely.
+		if c, _, ok := m.findCredentials(name); ok {
+			_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
+			return c, nil
+		}
+		return cfCredentials{}, err
+	}
+	c, _, ok := m.findCredentials(name)
+	if !ok {
+		if mm := cfTunnelIDRe.FindStringSubmatch(out); len(mm) == 2 {
+			return cfCredentials{}, fmt.Errorf("Tunnel %s erstellt, aber Zugangsdatei fehlt", mm[1])
+		}
+		return cfCredentials{}, fmt.Errorf("Zugangsdatei nicht gefunden: %s", strings.TrimSpace(out))
+	}
+	_ = m.app.settings.SetMany(map[string]string{"cf_tunnel_id": c.TunnelID, "cf_tunnel_name": c.TunnelName})
+	return c, nil
+}
+
+// RouteDNS creates the proxied CNAME that points a hostname at the tunnel.
+func (m *cloudflareManager) RouteDNS(ctx context.Context, name, hostname string) error {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	if hostname == "" {
+		return nil
+	}
+	out, err := m.run(ctx, "tunnel", "route", "dns", name, hostname)
+	if err != nil {
+		low := strings.ToLower(out)
+		if strings.Contains(low, "already exists") {
+			return nil
+		}
+		return err
 	}
 	return nil
 }
 
-// Status reports whether the integration is configured and healthy. It never
-// leaks the token.
-func (c *cloudflareClient) Status() map[string]any {
-	configured := c.app.settings.Get("cf_api_token_enc") != "" && c.app.settings.Get("cf_account_id") != ""
+// publicPort extracts the port the public UI listens on inside the container.
+func (m *cloudflareManager) publicPort() string {
+	if _, port, err := net.SplitHostPort(m.app.cfg.PublicAddr); err == nil && port != "" {
+		return port
+	}
+	return "3535"
+}
+
+// WriteConfig writes the cloudflared configuration file for a tunnel.
+func (m *cloudflareManager) WriteConfig(c cfCredentials, hostname string) error {
+	if err := m.ensureDirs(); err != nil {
+		return err
+	}
+	service := "http://localhost:" + m.publicPort()
+	cred := strings.ReplaceAll(m.credPath(c.TunnelID), `\`, `\\`)
+	var b strings.Builder
+	fmt.Fprintf(&b, "tunnel: %s\n", c.TunnelID)
+	fmt.Fprintf(&b, "credentials-file: \"%s\"\n", cred)
+	b.WriteString("ingress:\n")
+	if hostname != "" {
+		fmt.Fprintf(&b, "  - hostname: %s\n    service: %s\n", hostname, service)
+	}
+	fmt.Fprintf(&b, "  - service: %s\n", service)
+	return os.WriteFile(m.configPath(), []byte(b.String()), 0o600)
+}
+
+// RegenerateConfig rebuilds the config file from the stored credentials.
+func (m *cloudflareManager) RegenerateConfig() error {
+	c, _, ok := m.findCredentials(m.tunnelName())
+	if !ok {
+		return errors.New("keine Tunnel-Zugangsdaten gefunden")
+	}
+	return m.WriteConfig(c, m.app.settings.Get("cf_hostname"))
+}
+
+// Disconnect deletes the local certificate, credentials and configuration and
+// forgets the tunnel. The remote tunnel is removed on a best-effort basis.
+func (m *cloudflareManager) Disconnect(ctx context.Context) error {
+	m.CancelLogin()
+	if id := m.tunnelID(); id != "" && m.connected() {
+		_, _ = m.run(ctx, "tunnel", "delete", "-f", id)
+	}
+	_ = os.Remove(m.certPath())
+	_ = os.Remove(m.configPath())
+	if entries, err := os.ReadDir(m.cfDir()); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".json") {
+				_ = os.Remove(filepath.Join(m.cfDir(), e.Name()))
+			}
+		}
+	}
+	return m.app.settings.SetMany(map[string]string{
+		"cloudflare_enabled": "0",
+		"cf_tunnel_id":       "",
+		"cf_hostname":        "",
+	})
+}
+
+// Status reports the integration state without leaking any secret material.
+func (m *cloudflareManager) Status() map[string]any {
+	m.mu.Lock()
+	loginState, loginURL, loginErr := m.loginState, m.loginURL, m.loginErr
+	m.mu.Unlock()
+	_, binErr := m.binary()
+	available := binErr == nil
+	availMsg := ""
+	if binErr != nil {
+		availMsg = binErr.Error()
+	}
 	return map[string]any{
-		"enabled":    c.enabled(),
-		"configured": configured,
-		"accountId":  c.app.settings.Get("cf_account_id"),
-		"zoneId":     c.app.settings.Get("cf_zone_id"),
-		"tunnelName": c.app.settings.Get("cf_tunnel_name"),
-		"tunnelId":   c.app.settings.Get("cf_tunnel_id"),
+		"connected":      m.connected(),
+		"enabled":        m.enabled(),
+		"available":      available,
+		"availableError": availMsg,
+		"loginState":     loginState,
+		"loginUrl":       loginURL,
+		"loginError":     loginErr,
+		"tunnelId":       m.tunnelID(),
+		"tunnelName":     m.tunnelName(),
+		"hostname":       m.app.settings.Get("cf_hostname"),
 	}
 }
+
+/* -------------------------------------------------------------------------- */
+/* Connector supervisor                                                       */
+/* -------------------------------------------------------------------------- */
 
 // cloudflaredTunnel supervises the cloudflared connector process.
 type cloudflaredTunnel struct {
 	app *App
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	proc      *os.Process
-	status    string
-	message   string
-	tokenHash string
-	startedAt int64
-	restarts  int
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	proc       *os.Process
+	status     string
+	message    string
+	configHash string
+	startedAt  int64
+	restarts   int
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -373,6 +530,7 @@ func (t *cloudflaredTunnel) run() {
 }
 
 func (t *cloudflaredTunnel) tick() {
+	mgr := t.app.cloudflare
 	if !t.enabled() {
 		t.mu.Lock()
 		t.killLocked()
@@ -380,19 +538,33 @@ func (t *cloudflaredTunnel) tick() {
 		t.setStatus("disabled", "")
 		return
 	}
-	token, err := t.app.cloudflare.tunnelToken()
-	if err != nil {
+	if mgr == nil || !mgr.connected() {
 		t.mu.Lock()
 		t.killLocked()
 		t.mu.Unlock()
-		t.setStatus("unconfigured", err.Error())
+		t.setStatus("unconfigured", "Nicht mit Cloudflare verbunden")
 		return
 	}
-	sum := sha256.Sum256([]byte(token))
+	id := mgr.tunnelID()
+	if id == "" {
+		t.mu.Lock()
+		t.killLocked()
+		t.mu.Unlock()
+		t.setStatus("unconfigured", "Kein Tunnel eingerichtet")
+		return
+	}
+	if _, err := os.Stat(mgr.configPath()); err != nil {
+		if err := mgr.RegenerateConfig(); err != nil {
+			t.setStatus("unconfigured", err.Error())
+			return
+		}
+	}
+	raw, _ := os.ReadFile(mgr.configPath())
+	sum := sha256.Sum256(append(raw, []byte(id)...))
 	hash := hex.EncodeToString(sum[:8])
 
 	t.mu.Lock()
-	if t.cmd != nil && t.tokenHash == hash {
+	if t.cmd != nil && t.configHash == hash {
 		t.mu.Unlock()
 		return
 	}
@@ -406,8 +578,8 @@ func (t *cloudflaredTunnel) tick() {
 		t.setStatus("unavailable", "cloudflared nicht gefunden: "+err.Error())
 		return
 	}
-	cmd := exec.Command(path, "tunnel", "--no-autoupdate", "--loglevel", "info", "run")
-	cmd.Env = append(os.Environ(), "TUNNEL_TOKEN="+token)
+	cmd := exec.Command(path, "tunnel", "--config", mgr.configPath(), "--no-autoupdate", "--loglevel", "info", "run", id)
+	cmd.Env = mgr.env()
 	setProcAttrs(cmd)
 	logDir := filepath.Join(t.app.cfg.DataDir, "cloudflare")
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
@@ -429,7 +601,7 @@ func (t *cloudflaredTunnel) tick() {
 	t.mu.Lock()
 	t.cmd = cmd
 	t.proc = cmd.Process
-	t.tokenHash = hash
+	t.configHash = hash
 	t.startedAt = util.Now()
 	t.restarts++
 	t.status = "running"
@@ -442,7 +614,7 @@ func (t *cloudflaredTunnel) tick() {
 		if t.cmd == cmd {
 			t.cmd = nil
 			t.proc = nil
-			t.tokenHash = ""
+			t.configHash = ""
 			if err != nil && t.status == "running" {
 				t.status = "error"
 				t.message = "cloudflared beendet: " + err.Error()
@@ -458,7 +630,7 @@ func (t *cloudflaredTunnel) killLocked() {
 	}
 	t.cmd = nil
 	t.proc = nil
-	t.tokenHash = ""
+	t.configHash = ""
 	if t.status == "running" {
 		t.status = "stopped"
 	}
