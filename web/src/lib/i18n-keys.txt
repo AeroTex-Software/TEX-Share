@@ -195,6 +195,7 @@ admin.settings.cfZone
 admin.settings.cloudflare
 admin.settings.cloudflareHint
 admin.settings.dangerZone
+admin.settings.defaultInUse
 admin.settings.defaultRetention
 admin.settings.defaultStorage
 admin.settings.downloadConcurrency
@@ -215,6 +216,7 @@ admin.settings.maxFile
 admin.settings.maxShare
 admin.settings.monitoringRefresh
 admin.settings.passwordMin
+admin.settings.preview
 admin.settings.publicBaseUrl
 admin.settings.rememberDays
 admin.settings.removeImage

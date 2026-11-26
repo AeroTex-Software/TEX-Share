@@ -12,6 +12,7 @@
   import Footer from '../../components/Footer.svelte';
   import Icon from '../../components/Icon.svelte';
   import LocaleTheme from '../../components/LocaleTheme.svelte';
+  import TexShareLogo from '../../components/TexShareLogo.svelte';
 
   export let error = '';
 
@@ -93,14 +94,8 @@
     <div class="w-full max-w-md">
       <div class="mb-6 flex items-center justify-between">
         <div class="flex items-center gap-2.5">
-          {#if logo}
-            <img src={logo} alt="" class="h-9 w-auto max-w-[10rem] object-contain" />
-          {:else}
-            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-600 text-white">
-              <Icon name="shield" size={19} />
-            </span>
-            <span class="text-lg font-bold tracking-tight text-slate-900 dark:text-white">{brand}</span>
-          {/if}
+          <TexShareLogo src={logo} size={36} maxWidth={160} />
+          <span class="text-lg font-bold tracking-tight text-slate-900 dark:text-white">{brand}</span>
         </div>
         <LocaleTheme compact />
       </div>

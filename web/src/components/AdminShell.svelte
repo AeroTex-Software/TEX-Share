@@ -6,11 +6,13 @@
   import Footer from './Footer.svelte';
   import Icon from './Icon.svelte';
   import LocaleTheme from './LocaleTheme.svelte';
+  import TexShareLogo from './TexShareLogo.svelte';
 
   export let active = '';
   export let title = '';
   export let subtitle = '';
   export let icon = '';
+  export let titleLogo = false;
   export let appName = 'TEX Share';
   export let publicUrl = '';
   export let logoUrl = '';
@@ -71,7 +73,7 @@
       <Icon name={open ? 'close' : 'menu'} size={20} />
     </button>
     <span class="flex items-center gap-2 font-bold text-slate-900 dark:text-white">
-      <Icon name="admin" size={18} />{t('admin.title')}
+      <TexShareLogo src={logoUrl} size={24} />{appName}
     </span>
   </div>
 
@@ -82,16 +84,10 @@
       : '-translate-x-full'}"
   >
     <div class="flex h-16 shrink-0 items-center gap-2.5 border-b border-slate-200 px-5 dark:border-slate-800">
-      {#if logoUrl}
-        <img src={logoUrl} alt="" class="h-8 w-auto max-w-[9rem] object-contain" />
-      {:else}
-        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
-          <Icon name="admin" size={18} />
-        </span>
-      {/if}
+      <TexShareLogo src={logoUrl} size={34} maxWidth={140} />
       <div class="min-w-0">
         <p class="truncate text-sm font-bold text-slate-900 dark:text-white">{appName}</p>
-        <p class="text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{t('admin.title')}</p>
+        <p class="truncate text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">{version ? 'v' + version : t('admin.title')}</p>
       </div>
     </div>
 
@@ -182,7 +178,11 @@
       {#if title}
         <div class="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div class="flex items-center gap-3.5">
-            {#if icon}
+            {#if titleLogo}
+              <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-slate-100 p-1.5 dark:bg-slate-800/80">
+                <TexShareLogo src={logoUrl} size={32} />
+              </span>
+            {:else if icon}
               <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 text-white shadow-lg shadow-brand-600/25">
                 <Icon name={icon} size={24} />
               </span>

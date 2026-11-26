@@ -6,6 +6,7 @@
   import Footer from '../../components/Footer.svelte';
   import Icon from '../../components/Icon.svelte';
   import LocaleTheme from '../../components/LocaleTheme.svelte';
+  import TexShareLogo from '../../components/TexShareLogo.svelte';
   import { adminMeta, loadAdminShell } from '../meta';
 
   let username = '';
@@ -56,9 +57,7 @@
     <div class="w-full max-w-lg">
       <div class="mb-6 flex items-center justify-between">
         <span class="flex items-center gap-2.5">
-          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-600 text-white">
-            <Icon name="settings" size={19} />
-          </span>
+          <TexShareLogo size={36} />
           <span class="text-lg font-bold tracking-tight text-slate-900 dark:text-white">{t('admin.setup.title')}</span>
         </span>
         <LocaleTheme compact />

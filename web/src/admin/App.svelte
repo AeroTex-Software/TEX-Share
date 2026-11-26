@@ -19,6 +19,7 @@
   import Footer from '../components/Footer.svelte';
   import Icon from '../components/Icon.svelte';
   import LocaleTheme from '../components/LocaleTheme.svelte';
+  import TexShareLogo from '../components/TexShareLogo.svelte';
   import ToastHost from '../components/ToastHost.svelte';
   import { adminMeta, loadAdminMeta, loadAdminShell } from './meta';
   import Audit from './views/Audit.svelte';
@@ -88,9 +89,7 @@
     {#if !$sessionReady}
       <div class="flex min-h-screen flex-col">
         <div class="flex flex-1 flex-col items-center justify-center gap-4">
-          <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-600 text-white">
-            <Icon name="admin" size={24} />
-          </span>
+          <TexShareLogo size={56} />
           <p class="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
             <Icon name="spinner" size={16} class="animate-spin" />{t('common.loading')}
           </p>
@@ -108,7 +107,7 @@
         active={head.active}
         title={head.title}
         subtitle={head.subtitle}
-        icon={section === '' ? 'admin' : ''}
+        titleLogo={section === ''}
         appName={$adminMeta.appName}
         publicUrl={$adminMeta.publicUrl}
         logoUrl={$adminMeta.logoUrl}

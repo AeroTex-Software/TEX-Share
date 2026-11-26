@@ -45,12 +45,18 @@
   let uploadBusy = '';
 
   type BrandingKind = 'logo' | 'favicon';
+  // A selected file is previewed locally and only uploaded when the admin
+  // saves, so a custom logo never replaces the bundled default by accident.
+  let pending: Record<BrandingKind, File | null> = { logo: null, favicon: null };
+  let previews: Record<BrandingKind, string> = { logo: '', favicon: '' };
+
   $: brandingItems = [
     {
       kind: 'logo' as BrandingKind,
       label: t('admin.settings.logo'),
       has: branding.logo,
       url: branding.logoUrl,
+      fallback: '/assets/tex-share-icon.png',
       accept: 'image/png,image/jpeg,image/webp,image/svg+xml'
     },
     {
@@ -58,6 +64,7 @@
       label: t('admin.settings.favicon'),
       has: branding.favicon,
       url: branding.faviconUrl,
+      fallback: '/favicon.png',
       accept: 'image/png,image/x-icon,image/vnd.microsoft.icon,image/jpeg'
     }
   ];
@@ -124,6 +131,7 @@
   onMount(load);
   onDestroy(() => {
     if (cfPollTimer) clearInterval(cfPollTimer);
+    clearPreviews();
   });
 
   function bool(key: string): boolean {
@@ -272,7 +280,56 @@
   }
 
   function saveBranding(): void {
-    void saveSection('branding', { app_name: appName.trim() });
+    void persistBranding();
+  }
+
+  // selectBranding stages a file locally and shows an immediate preview; the
+  // upload only happens when the admin saves.
+  function selectBranding(kind: BrandingKind, event: Event): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0] || null;
+    input.value = '';
+    if (!file) return;
+    if (previews[kind]) URL.revokeObjectURL(previews[kind]);
+    pending = { ...pending, [kind]: file };
+    previews = { ...previews, [kind]: URL.createObjectURL(file) };
+  }
+
+  function discardPreview(kind: BrandingKind): void {
+    if (previews[kind]) URL.revokeObjectURL(previews[kind]);
+    pending = { ...pending, [kind]: null };
+    previews = { ...previews, [kind]: '' };
+  }
+
+  function clearPreviews(): void {
+    (['logo', 'favicon'] as BrandingKind[]).forEach((kind) => {
+      if (previews[kind]) URL.revokeObjectURL(previews[kind]);
+    });
+    previews = { logo: '', favicon: '' };
+    pending = { logo: null, favicon: null };
+  }
+
+  async function persistBranding(): Promise<void> {
+    saving = 'branding';
+    error = '';
+    try {
+      for (const kind of ['logo', 'favicon'] as BrandingKind[]) {
+        const file = pending[kind];
+        if (!file) continue;
+        const fd = new FormData();
+        fd.append('file', file);
+        await api(`/branding/${kind}`, { method: 'POST', body: fd });
+      }
+      await api('/settings', { method: 'PATCH', body: { settings: { app_name: appName.trim() } } });
+      clearPreviews();
+      toast(t('admin.settings.saved'), 'success');
+      await load();
+    } catch (err) {
+      error = errorText(err);
+      toast(error, 'error');
+    } finally {
+      saving = '';
+    }
   }
 
   function saveGeneral(): void {
@@ -346,25 +403,6 @@
   async function setMaintenance(next: boolean): Promise<void> {
     maintenanceMode = next;
     await saveSection('maintenance', { maintenance_mode: next ? '1' : '0' });
-  }
-
-  async function uploadBranding(kind: 'logo' | 'favicon', event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) return;
-    uploadBusy = kind;
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await api(`/branding/${kind}`, { method: 'POST', body: fd });
-      toast(t('admin.settings.saved'), 'success');
-      await load();
-    } catch (err) {
-      toast(errorText(err), 'error');
-    } finally {
-      uploadBusy = '';
-    }
   }
 
   async function removeBranding(kind: 'logo' | 'favicon'): Promise<void> {
@@ -522,24 +560,35 @@
             <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
               <p class="text-sm font-medium text-slate-800 dark:text-slate-200">{item.label}</p>
               <div class="mt-3 flex items-center gap-3">
-                {#if item.has}
+                {#if previews[item.kind]}
+                  <img src={previews[item.kind]} alt={item.label} class="h-12 w-12 rounded-lg border border-brand-300 object-contain p-1 dark:border-brand-500/50" />
+                {:else if item.has}
                   <img src={mediaURL(item.url)} alt={item.label} class="h-12 w-12 rounded-lg border border-slate-200 object-contain p-1 dark:border-slate-700" />
                 {:else}
-                  <span class="flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-slate-300 text-slate-400 dark:border-slate-700"><Icon name="image" size={20} /></span>
+                  <img src={item.fallback} alt={item.label} class="h-12 w-12 rounded-lg border border-dashed border-slate-300 object-contain p-1 dark:border-slate-700" />
                 {/if}
                 <div class="flex flex-wrap gap-2">
                   <label class="btn-secondary btn-sm cursor-pointer">
                     {#if uploadBusy === item.kind}<Icon name="spinner" size={15} class="animate-spin" />{:else}<Icon name="upload" size={15} />{/if}
                     {item.kind === 'logo' ? t('admin.settings.uploadLogo') : t('admin.settings.uploadFavicon')}
-                    <input type="file" class="hidden" accept={item.accept} on:change={(e) => uploadBranding(item.kind, e)} disabled={uploadBusy === item.kind} />
+                    <input type="file" class="hidden" accept={item.accept} on:change={(e) => selectBranding(item.kind, e)} disabled={uploadBusy === item.kind} />
                   </label>
-                  {#if item.has}
+                  {#if previews[item.kind]}
+                    <button type="button" class="btn-ghost btn-sm" on:click={() => discardPreview(item.kind)}>
+                      <Icon name="close" size={15} />{t('common.cancel')}
+                    </button>
+                  {:else if item.has}
                     <button type="button" class="btn-ghost btn-sm text-rose-600 dark:text-rose-400" on:click={() => removeBranding(item.kind)} disabled={uploadBusy === item.kind}>
                       <Icon name="trash" size={15} />{t('admin.settings.removeImage')}
                     </button>
                   {/if}
                 </div>
               </div>
+              {#if previews[item.kind]}
+                <p class="mt-2 text-xs font-medium text-brand-600 dark:text-brand-400">{t('admin.settings.preview')}</p>
+              {:else if !item.has}
+                <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">{t('admin.settings.defaultInUse')}</p>
+              {/if}
             </div>
           {/each}
         </div>

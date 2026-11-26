@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
-  import Icon from './Icon.svelte';
+  import TexShareLogo from './TexShareLogo.svelte';
 
   export let version = '';
   export let admin = false;
@@ -18,7 +18,7 @@
       rel="noopener noreferrer"
       class="inline-flex items-center gap-1.5 font-medium text-slate-600 transition hover:text-brand-600 dark:text-slate-300 dark:hover:text-brand-400"
     >
-      <Icon name="shield" size={14} />
+      <TexShareLogo size={16} />
       <span>{t('app.footer')}</span>
     </a>
     {#if version}

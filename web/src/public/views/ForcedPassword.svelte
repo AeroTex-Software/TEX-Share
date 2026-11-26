@@ -2,16 +2,20 @@
   import { errorText } from '../../lib/api';
   import { t } from '../../lib/i18n';
   import { navigate } from '../../lib/router';
-  import { changePassword, clearSession, loadNotifications, loadPublicConfig } from '../../lib/stores';
+  import { changePassword, clearSession, loadNotifications, loadPublicConfig, publicMeta } from '../../lib/stores';
   import Footer from '../../components/Footer.svelte';
   import Icon from '../../components/Icon.svelte';
   import LocaleTheme from '../../components/LocaleTheme.svelte';
+  import TexShareLogo from '../../components/TexShareLogo.svelte';
 
   let currentPassword = '';
   let newPassword = '';
   let confirmPassword = '';
   let busy = false;
   let error = '';
+
+  $: brand = $publicMeta?.appName || t('app.name');
+  $: logo = $publicMeta?.branding?.logo ? $publicMeta.branding.logoUrl : '';
 
   async function submit(event: Event): Promise<void> {
     event.preventDefault();
@@ -46,7 +50,13 @@
 <div class="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
   <div class="flex flex-1 items-center justify-center px-4 py-10">
     <div class="w-full max-w-md">
-      <div class="mb-6 flex justify-end"><LocaleTheme compact /></div>
+      <div class="mb-6 flex items-center justify-between">
+        <span class="flex items-center gap-2.5">
+          <TexShareLogo src={logo} size={30} />
+          <span class="text-base font-bold tracking-tight text-slate-900 dark:text-white">{brand}</span>
+        </span>
+        <LocaleTheme compact />
+      </div>
       <div class="card card-pad fade-in">
         <span class="mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-amber-100 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300">
           <Icon name="lock" size={22} />

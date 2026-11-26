@@ -721,6 +721,11 @@ func (a *App) publicBrandingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	name := a.settings.Get(spec.setting)
 	if name == "" {
+		// No custom upload: serve the bundled default so the header logo and
+		// the browser tab icon always resolve.
+		if a.serveBrandingDefault(w, r, kind) {
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -743,7 +748,7 @@ func (a *App) publicBrandingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", http.DetectContentType(data))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if fi != nil {

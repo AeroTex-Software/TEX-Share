@@ -1,6 +1,8 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"mime"
 	"net/http"
@@ -247,11 +249,21 @@ func (a *App) staticHandler(admin bool) http.Handler {
 			_, _ = w.Write(data)
 			return
 		}
-		if name == "favicon.ico" || name == "favicon.png" {
-			if a.serveBrandingFavicon(w, r) {
+		if name == "favicon.ico" || name == "favicon.png" || name == "apple-touch-icon.png" || name == "apple-touch-icon-precomposed.png" {
+			// The custom favicon overrides the browser tab icon only; the bundled
+			// default is served otherwise so these never fall through to the SPA
+			// HTML or 404.
+			if (name == "favicon.ico" || name == "favicon.png") && a.serveBrandingFavicon(w, r) {
 				return
 			}
-			w.WriteHeader(http.StatusNoContent)
+			if serveDistFile(w, name, "no-cache") {
+				return
+			}
+			if name == "favicon.ico" || name == "favicon.png" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
 			return
 		}
 		data, err := fs.ReadFile(texweb.Dist(), index)
@@ -265,6 +277,24 @@ func (a *App) staticHandler(admin bool) http.Handler {
 	})
 }
 
+// serveDistFile writes a file from the embedded frontend with a content type
+// derived from its extension, and reports whether the file existed.
+func serveDistFile(w http.ResponseWriter, name, cacheControl string) bool {
+	data, err := fs.ReadFile(texweb.Dist(), name)
+	if err != nil {
+		return false
+	}
+	ct := mime.TypeByExtension(path.Ext(name))
+	if ct == "" {
+		ct = http.DetectContentType(data)
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(data)
+	return true
+}
+
 func (a *App) serveBrandingFavicon(w http.ResponseWriter, r *http.Request) bool {
 	name := a.settings.Get("favicon_path")
 	if name == "" {
@@ -275,7 +305,33 @@ func (a *App) serveBrandingFavicon(w http.ResponseWriter, r *http.Request) bool 
 		return false
 	}
 	w.Header().Set("Content-Type", http.DetectContentType(data))
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(data)
+	return true
+}
+
+// serveBrandingDefault serves the bundled default logo or favicon when no
+// custom image has been uploaded, so the header logo and tab icon always
+// resolve. Reports whether a default was written.
+func (a *App) serveBrandingDefault(w http.ResponseWriter, r *http.Request, kind string) bool {
+	name := "favicon.png"
+	if kind == "logo" {
+		name = "assets/tex-share-icon.png"
+	}
+	data, err := fs.ReadFile(texweb.Dist(), name)
+	if err != nil {
+		return false
+	}
+	sum := sha256.Sum256(data)
+	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return true
+	}
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", http.DetectContentType(data))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
 	return true
 }

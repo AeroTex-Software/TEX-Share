@@ -8,6 +8,7 @@
   import Footer from './Footer.svelte';
   import Icon from './Icon.svelte';
   import LocaleTheme from './LocaleTheme.svelte';
+  import TexShareLogo from './TexShareLogo.svelte';
 
   export let active = '';
   export let title = '';
@@ -46,13 +47,7 @@
   <header class="sticky top-0 z-40 border-b border-slate-200 bg-white/85 backdrop-blur dark:border-slate-800 dark:bg-slate-950/85">
     <div class="mx-auto flex h-16 max-w-6xl items-center gap-3 px-4">
       <a href="/" class="flex min-w-0 items-center gap-2.5" on:click|preventDefault={() => go('/')}>
-        {#if logo}
-          <img src={logo} alt="" class="h-8 w-auto max-w-[9rem] object-contain" />
-        {:else}
-          <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
-            <Icon name="shield" size={18} />
-          </span>
-        {/if}
+        <TexShareLogo src={logo} size={30} maxWidth={140} />
         <span class="truncate text-base font-bold tracking-tight text-slate-900 dark:text-white">{brandName}</span>
       </a>
 
